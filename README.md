@@ -3,6 +3,11 @@
 Local, one-way synchronization from Rhino to Unreal. The repository contains
 the Phase 1 Rhino plugin and the protocol contract for the Unreal receiver.
 
+## Установка
+
+Для обычного пользователя есть отдельная инструкция с установщиками для Windows и macOS:
+[docs/installation.md](docs/installation.md).
+
 ## Rhino plugin
 
 The plugin targets Rhino 8 on Windows and macOS (`net7.0`). Restore and build it

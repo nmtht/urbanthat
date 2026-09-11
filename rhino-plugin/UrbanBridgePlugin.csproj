@@ -18,4 +18,14 @@
   <Target Name="CreateRhinoPlugin" AfterTargets="Build">
     <Copy SourceFiles="$(TargetPath)" DestinationFiles="$(TargetDir)$(AssemblyName).rhp" />
   </Target>
+
+  <!-- Deployment folder copied by the Windows/macOS installer scripts. -->
+  <Target Name="PreparePluginBundle" AfterTargets="Build" DependsOnTargets="CreateRhinoPlugin">
+    <PropertyGroup>
+      <PluginBundleDir>$(TargetDir)package/$(AssemblyName)</PluginBundleDir>
+    </PropertyGroup>
+    <MakeDir Directories="$(PluginBundleDir)" />
+    <Copy SourceFiles="$(TargetDir)$(AssemblyName).rhp" DestinationFolder="$(PluginBundleDir)" />
+    <Copy SourceFiles="$(TargetDir)Fleck.dll" DestinationFolder="$(PluginBundleDir)" Condition="Exists('$(TargetDir)Fleck.dll')" />
+  </Target>
 </Project>

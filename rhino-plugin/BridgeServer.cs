@@ -17,6 +17,9 @@ public sealed class BridgeServer : IDisposable
     private Timer? _heartbeat;
     private Timer? _upsertTimer;
 
+    public bool IsRunning => _server is not null;
+    public int ClientCount { get { lock (_clientsLock) return _clients.Count; } }
+
     public void Start()
     {
         // Fleck is .NET Standard and runs in both Rhino 8 for Windows and macOS.
@@ -130,5 +133,6 @@ public sealed class BridgeServer : IDisposable
             _clients.Clear();
         }
         _server?.Dispose();
+        _server = null;
     }
 }

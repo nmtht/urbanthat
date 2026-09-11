@@ -16,6 +16,8 @@ public sealed class UrbanBridgePlugin : PlugIn
 
     public static UrbanBridgePlugin Instance { get; private set; } = null!;
 
+    internal BridgeServer? Server => _server;
+
     protected override LoadReturnCode OnLoad(ref string errorMessage)
     {
         try

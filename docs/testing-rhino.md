@@ -11,14 +11,9 @@
 
 ## Сборка и загрузка
 
-1. В корне репозитория выполните `dotnet build rhino-plugin/UrbanBridgePlugin.csproj`.
-   После успешной сборки файл для установки находится по пути
-   `rhino-plugin/bin/Debug/net7.0/UrbanBridgePlugin.rhp`.
-2. В командной строке Rhino выполните `PlugInManager`, нажмите **Install…** и выберите
-   этот `.rhp`. Эта команда доступна и в Rhino for Windows, и в Rhino for Mac.
-   Убедитесь, что плагин включён.
-3. Откройте Command History. После загрузки должна появиться строка
-   `[UrbanBridge] Rhino bridge started at ws://localhost:7890`.
+Соберите и установите плагин по [инструкции для обычного пользователя](installation.md).
+После запуска Rhino выполните `UrbanBridgeStatus`; команда должна показать
+`Running at ws://localhost:7890`. Откройте Command History для диагностических сообщений.
 
 > Если WebSocket-сервер не может открыть порт, освободите `7890` или измените
 > константу адреса одновременно в `BridgeServer.cs` и в `URBANBRIDGE_URL` у probe.
