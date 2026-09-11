@@ -1,6 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <TargetFramework>net7.0</TargetFramework>
+    <TargetExt>.rhp</TargetExt>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>latest</LangVersion>
@@ -9,23 +10,16 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- Both Rhino 8 hosts use .NET 7; Fleck is a cross-platform WebSocket server. -->
-    <PackageReference Include="RhinoCommon" Version="8.*" />
-    <PackageReference Include="Fleck" Version="1.2.0" />
+    <!-- RhinoCommon is supplied by Rhino itself. No third-party runtime DLLs are required. -->
+    <PackageReference Include="RhinoCommon" Version="8.*" PrivateAssets="all" />
   </ItemGroup>
 
-  <!-- Rhino plug-ins are managed assemblies conventionally distributed as .rhp files. -->
-  <Target Name="CreateRhinoPlugin" AfterTargets="Build">
-    <Copy SourceFiles="$(TargetPath)" DestinationFiles="$(TargetDir)$(AssemblyName).rhp" />
-  </Target>
-
-  <!-- Deployment folder copied by the Windows/macOS installer scripts. -->
-  <Target Name="PreparePluginBundle" AfterTargets="Build" DependsOnTargets="CreateRhinoPlugin">
+  <!-- A single .rhp is ready for direct installation through Rhino's PlugInManager. -->
+  <Target Name="PreparePluginBundle" AfterTargets="Build">
     <PropertyGroup>
       <PluginBundleDir>$(TargetDir)package/$(AssemblyName)</PluginBundleDir>
     </PropertyGroup>
     <MakeDir Directories="$(PluginBundleDir)" />
-    <Copy SourceFiles="$(TargetDir)$(AssemblyName).rhp" DestinationFolder="$(PluginBundleDir)" />
-    <Copy SourceFiles="$(TargetDir)Fleck.dll" DestinationFolder="$(PluginBundleDir)" Condition="Exists('$(TargetDir)Fleck.dll')" />
+    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(PluginBundleDir)" />
   </Target>
 </Project>
