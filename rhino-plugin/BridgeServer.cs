@@ -36,7 +36,7 @@ public sealed class BridgeServer : IDisposable
     }
 
     /// <summary>Coalesces changes occurring in the same short Rhino operation into batch_upsert.</summary>
-    public void QueueObjectUpsert(RhinoDoc document, Rhino.DocObjects.RhinoObject rhinoObject)
+    public void QueueObjectUpsert(RhinoDoc document, global::Rhino.DocObjects.RhinoObject rhinoObject)
     {
         if (!ObjectSerializer.TrySerialize(document, rhinoObject, out var payload) || payload is null) return;
         lock (_upsertsLock)
