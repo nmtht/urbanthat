@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net7.0-windows</TargetFramework>
+    <UseWPF>false</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>UrbanBridgePlugin</AssemblyName>
+    <RootNamespace>UrbanBridge.Rhino</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Rhino 8 ships on .NET 7. -->
+    <PackageReference Include="RhinoCommon" Version="8.*" />
+  </ItemGroup>
+
+  <!-- Rhino plug-ins are managed assemblies conventionally distributed as .rhp files. -->
+  <Target Name="CreateRhinoPlugin" AfterTargets="Build">
+    <Copy SourceFiles="$(TargetPath)" DestinationFiles="$(TargetDir)$(AssemblyName).rhp" />
+  </Target>
+</Project>
