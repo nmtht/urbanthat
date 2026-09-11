@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net7.0</TargetFramework>
+    <TargetExt>.rhp</TargetExt>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>UrbanBridgePlugin</AssemblyName>
+    <RootNamespace>UrbanBridge.Rhino</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- RhinoCommon is supplied by Rhino itself. No third-party runtime DLLs are required. -->
+    <PackageReference Include="RhinoCommon" Version="8.*" PrivateAssets="all" />
+  </ItemGroup>
+
+  <!-- A single .rhp is ready for direct installation through Rhino's PlugInManager. -->
+  <Target Name="PreparePluginBundle" AfterTargets="Build">
+    <PropertyGroup>
+      <PluginBundleDir>$(TargetDir)package/$(AssemblyName)</PluginBundleDir>
+    </PropertyGroup>
+    <MakeDir Directories="$(PluginBundleDir)" />
+    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(PluginBundleDir)" />
+  </Target>
+</Project>

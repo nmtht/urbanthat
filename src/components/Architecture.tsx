@@ -2,7 +2,7 @@ import { Badge, Card, Section } from './ui';
 
 const rhinoItems = [
   ['UrbanBridgePlugin.cs', 'точка входа, PlugIn.OnLoad → сервер'],
-  ['BridgeServer.cs', 'WebSocket-сервер, System.Net.WebSockets / Fleck'],
+  ['BridgeServer.cs', 'встроенный loopback WebSocket-сервер, без внешних DLL'],
   ['ObjectSerializer.cs', 'RhinoObject → object_payload, единицы → метры'],
   ['DocumentEventHandlers.cs', 'Add / Replace / Delete / EndOpenDocument'],
 ];
