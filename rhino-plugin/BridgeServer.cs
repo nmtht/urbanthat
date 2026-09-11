@@ -76,10 +76,10 @@ public sealed class BridgeServer : IDisposable
         var objects = new List<object>();
         foreach (var rhinoObject in document.Objects)
         {
-            if (rhinoObject.IsDeleted || !rhinoObject.IsVisible) continue;
+            if (rhinoObject.IsDeleted) continue;
             if (ObjectSerializer.TrySerialize(document, rhinoObject, out var payload) && payload is not null) objects.Add(payload);
         }
-        _ = BroadcastAsync(new BridgeMessage("full_sync", Objects: objects, DocumentId: document.Id.ToString(), Units: "meters"));
+        _ = BroadcastAsync(new BridgeMessage("full_sync", Objects: objects, DocumentId: document.RuntimeSerialNumber.ToString(), Units: "meters"));
     }
 
     private async Task AcceptLoopAsync(CancellationToken cancellationToken)

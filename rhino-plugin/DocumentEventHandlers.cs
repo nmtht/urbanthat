@@ -18,8 +18,17 @@ public sealed class DocumentEventHandlers : IDisposable
         RhinoDoc.EndOpenDocument += OnDocumentOpened;
     }
 
-    private void OnObjectAdded(object? sender, RhinoObjectEventArgs eventArgs) => _server.QueueObjectUpsert(eventArgs.Document, eventArgs.TheObject);
-    private void OnObjectReplaced(object? sender, RhinoReplaceObjectEventArgs eventArgs) => _server.QueueObjectUpsert(eventArgs.Document, eventArgs.NewRhinoObject);
+    // RhinoObjectEventArgs does not carry a RhinoDoc in RhinoCommon 8; the event sender is the document.
+    private void OnObjectAdded(object? sender, RhinoObjectEventArgs eventArgs)
+    {
+        if (sender is RhinoDoc document) _server.QueueObjectUpsert(document, eventArgs.TheObject);
+    }
+
+    private void OnObjectReplaced(object? sender, RhinoReplaceObjectEventArgs eventArgs)
+    {
+        if (sender is RhinoDoc document) _server.QueueObjectUpsert(document, eventArgs.NewRhinoObject);
+    }
+
     private void OnObjectDeleted(object? sender, RhinoObjectEventArgs eventArgs) => _server.SendObjectDeleted(eventArgs.ObjectId);
     private void OnDocumentOpened(object? sender, DocumentOpenEventArgs eventArgs) => _server.SendFullSync(eventArgs.Document);
 

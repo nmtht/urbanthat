@@ -15,7 +15,7 @@ coordinates sent by Rhino are metres; Unreal converts them to centimetres.
 | `heartbeat` | both | Liveness message, sent every five seconds. |
 | `request_full_sync` | Unreal → Rhino | Ask Rhino to resend the active document. |
 
-`full_sync` contains `document_id`, `units: "meters"`, and `objects`.
+`full_sync` contains `document_id` (the Rhino document runtime serial number), `units: "meters"`, and `objects`.
 `object_upserted` contains `object`; `batch_upsert` contains `objects`; and
 `object_deleted` contains `id`.
 
