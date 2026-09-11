@@ -1,32 +1,34 @@
-using System.Net;
-using System.Net.WebSockets;
-using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Fleck;
 using Rhino;
 
 namespace UrbanBridge.Rhino;
 
-/// <summary>Local WebSocket host. It accepts one or more Unreal clients and broadcasts Rhino events.</summary>
+/// <summary>Cross-platform local WebSocket host that broadcasts Rhino document changes.</summary>
 public sealed class BridgeServer : IDisposable
 {
     private static readonly JsonSerializerOptions JsonOptions = new() { DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull };
-    private readonly HttpListener _listener = new();
-    private readonly CancellationTokenSource _stopping = new();
     private readonly object _clientsLock = new();
-    private readonly HashSet<WebSocket> _clients = [];
+    private readonly HashSet<IWebSocketConnection> _clients = [];
     private readonly object _upsertsLock = new();
     private readonly Dictionary<Guid, ObjectPayload> _pendingUpserts = [];
-    private Task? _acceptLoop;
+    private WebSocketServer? _server;
     private Timer? _heartbeat;
     private Timer? _upsertTimer;
 
     public void Start()
     {
-        _listener.Prefixes.Add("http://localhost:7890/");
-        _listener.Start();
-        _acceptLoop = Task.Run(AcceptLoopAsync);
-        _heartbeat = new Timer(_ => _ = BroadcastAsync(new BridgeMessage("heartbeat", Timestamp: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds())), null,
+        // Fleck is .NET Standard and runs in both Rhino 8 for Windows and macOS.
+        _server = new WebSocketServer("ws://127.0.0.1:7890");
+        _server.Start(socket =>
+        {
+            socket.OnOpen = () => OnClientOpened(socket);
+            socket.OnClose = () => OnClientClosed(socket);
+            socket.OnError = exception => RhinoApp.WriteLine($"[UrbanBridge] WebSocket client error: {exception.Message}");
+            socket.OnMessage = message => OnClientMessage(message);
+        });
+        _heartbeat = new Timer(_ => Broadcast(new BridgeMessage("heartbeat", Timestamp: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds())), null,
             TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
     }
 
@@ -45,7 +47,7 @@ public sealed class BridgeServer : IDisposable
     public void SendObjectDeleted(Guid objectId)
     {
         lock (_upsertsLock) _pendingUpserts.Remove(objectId);
-        _ = BroadcastAsync(new BridgeMessage("object_deleted", Id: objectId.ToString()));
+        Broadcast(new BridgeMessage("object_deleted", Id: objectId.ToString()));
     }
 
     private void FlushUpserts()
@@ -57,9 +59,9 @@ public sealed class BridgeServer : IDisposable
             upserts = _pendingUpserts.Values.Cast<object>().ToList();
             _pendingUpserts.Clear();
         }
-        _ = upserts.Count == 1
-            ? BroadcastAsync(new BridgeMessage("object_upserted", Object: upserts[0]))
-            : BroadcastAsync(new BridgeMessage("batch_upsert", Objects: upserts));
+        Broadcast(upserts.Count == 1
+            ? new BridgeMessage("object_upserted", Object: upserts[0])
+            : new BridgeMessage("batch_upsert", Objects: upserts));
     }
 
     public void SendFullSync(RhinoDoc document)
@@ -70,72 +72,51 @@ public sealed class BridgeServer : IDisposable
             if (rhinoObject.IsDeleted || !rhinoObject.IsVisible) continue;
             if (ObjectSerializer.TrySerialize(document, rhinoObject, out var payload) && payload is not null) objects.Add(payload);
         }
-        _ = BroadcastAsync(new BridgeMessage("full_sync", Objects: objects, DocumentId: document.Id.ToString(), Units: "meters"));
+        Broadcast(new BridgeMessage("full_sync", Objects: objects, DocumentId: document.Id.ToString(), Units: "meters"));
     }
 
-    private async Task AcceptLoopAsync()
+    private void OnClientOpened(IWebSocketConnection socket)
     {
-        while (!_stopping.IsCancellationRequested)
-        {
-            try
-            {
-                var context = await _listener.GetContextAsync();
-                if (!context.Request.IsWebSocketRequest)
-                {
-                    context.Response.StatusCode = (int)HttpStatusCode.BadRequest;
-                    context.Response.Close();
-                    continue;
-                }
-                var socketContext = await context.AcceptWebSocketAsync(null);
-                lock (_clientsLock) _clients.Add(socketContext.WebSocket);
-                RhinoApp.WriteLine("[UrbanBridge] Unreal client connected.");
-                _ = ReceiveLoopAsync(socketContext.WebSocket);
-            }
-            catch (HttpListenerException) when (_stopping.IsCancellationRequested) { }
-            catch (ObjectDisposedException) when (_stopping.IsCancellationRequested) { }
-            catch (Exception exception)
-            {
-                RhinoApp.WriteLine($"[UrbanBridge] WebSocket accept error: {exception.Message}");
-            }
-        }
+        lock (_clientsLock) _clients.Add(socket);
+        RhinoApp.WriteLine("[UrbanBridge] Unreal client connected.");
     }
 
-    private async Task ReceiveLoopAsync(WebSocket socket)
+    private void OnClientClosed(IWebSocketConnection socket)
     {
-        var buffer = new byte[4096];
+        lock (_clientsLock) _clients.Remove(socket);
+        RhinoApp.WriteLine("[UrbanBridge] Unreal client disconnected.");
+    }
+
+    private void OnClientMessage(string json)
+    {
         try
         {
-            while (socket.State == WebSocketState.Open && !_stopping.IsCancellationRequested)
-            {
-                var received = await socket.ReceiveAsync(buffer, _stopping.Token);
-                if (received.MessageType == WebSocketMessageType.Close) break;
-                var json = Encoding.UTF8.GetString(buffer, 0, received.Count);
-                using var message = JsonDocument.Parse(json);
-                if (message.RootElement.TryGetProperty("type", out var type) && type.GetString() == "request_full_sync")
-                    RhinoApp.InvokeOnUiThread((Action)(() => SendFullSync(RhinoDoc.ActiveDoc)));
-            }
+            using var message = JsonDocument.Parse(json);
+            if (message.RootElement.TryGetProperty("type", out var type) && type.GetString() == "request_full_sync")
+                RhinoApp.InvokeOnUiThread((Action)(() =>
+                {
+                    if (RhinoDoc.ActiveDoc is { } document) SendFullSync(document);
+                }));
         }
-        catch (OperationCanceledException) { }
-        catch (WebSocketException) { }
-        catch (JsonException exception) { RhinoApp.WriteLine($"[UrbanBridge] Invalid client JSON: {exception.Message}"); }
-        finally
+        catch (JsonException exception)
         {
-            lock (_clientsLock) _clients.Remove(socket);
-            socket.Dispose();
-            RhinoApp.WriteLine("[UrbanBridge] Unreal client disconnected.");
+            RhinoApp.WriteLine($"[UrbanBridge] Invalid client JSON: {exception.Message}");
         }
     }
 
-    private async Task BroadcastAsync(BridgeMessage message)
+    private void Broadcast(BridgeMessage message)
     {
-        var payload = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(message, JsonOptions));
-        WebSocket[] clients;
-        lock (_clientsLock) clients = _clients.Where(socket => socket.State == WebSocketState.Open).ToArray();
+        var payload = JsonSerializer.Serialize(message, JsonOptions);
+        IWebSocketConnection[] clients;
+        lock (_clientsLock) clients = _clients.ToArray();
         foreach (var client in clients)
         {
-            try { await client.SendAsync(payload, WebSocketMessageType.Text, true, _stopping.Token); }
-            catch (WebSocketException) { lock (_clientsLock) _clients.Remove(client); }
-            catch (OperationCanceledException) { }
+            try { client.Send(payload); }
+            catch (Exception exception)
+            {
+                lock (_clientsLock) _clients.Remove(client);
+                RhinoApp.WriteLine($"[UrbanBridge] WebSocket send error: {exception.Message}");
+            }
         }
     }
 
@@ -143,14 +124,11 @@ public sealed class BridgeServer : IDisposable
     {
         _heartbeat?.Dispose();
         _upsertTimer?.Dispose();
-        _stopping.Cancel();
-        _listener.Close();
         lock (_clientsLock)
         {
-            foreach (var client in _clients) client.Abort();
+            foreach (var client in _clients) client.Close();
             _clients.Clear();
         }
-        try { _acceptLoop?.Wait(TimeSpan.FromSeconds(2)); } catch (AggregateException) { }
-        _stopping.Dispose();
+        _server?.Dispose();
     }
 }

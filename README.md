@@ -5,10 +5,10 @@ the Phase 1 Rhino plugin and the protocol contract for the Unreal receiver.
 
 ## Rhino plugin
 
-The plugin targets Rhino 8 on Windows (`net7.0-windows`). Restore and build it
+The plugin targets Rhino 8 on Windows and macOS (`net7.0`). Restore and build it
 with:
 
-```powershell
+```sh
 dotnet build rhino-plugin/UrbanBridgePlugin.csproj
 ```
 
@@ -25,7 +25,7 @@ Unsupported objects are reported in Rhino's command history and skipped.
 Для быстрой end-to-end проверки используйте included receiver probe из Node.js 22+
 (он использует встроенный WebSocket, зависимости не нужны):
 
-```powershell
+```sh
 node tools/ws-probe.mjs
 ```
 

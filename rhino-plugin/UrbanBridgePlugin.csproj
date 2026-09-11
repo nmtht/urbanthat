@@ -1,7 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFramework>net7.0-windows</TargetFramework>
-    <UseWPF>false</UseWPF>
+    <TargetFramework>net7.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>latest</LangVersion>
@@ -10,8 +9,9 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- Rhino 8 ships on .NET 7. -->
+    <!-- Both Rhino 8 hosts use .NET 7; Fleck is a cross-platform WebSocket server. -->
     <PackageReference Include="RhinoCommon" Version="8.*" />
+    <PackageReference Include="Fleck" Version="1.2.0" />
   </ItemGroup>
 
   <!-- Rhino plug-ins are managed assemblies conventionally distributed as .rhp files. -->

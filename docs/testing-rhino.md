@@ -5,21 +5,22 @@
 
 ## Требования
 
-- Windows с Rhino 8;
-- .NET SDK 7.x (Rhino 8 использует `net7.0-windows`);
+- Rhino 8 для Windows **или macOS**;
+- .NET SDK 7.x (проект нацелен на кроссплатформенный `net7.0`);
 - Node.js 22+ для probe (не нужен для сборки плагина).
 
 ## Сборка и загрузка
 
 1. В корне репозитория выполните `dotnet build rhino-plugin/UrbanBridgePlugin.csproj`.
    После успешной сборки файл для установки находится по пути
-   `rhino-plugin/bin/Debug/net7.0-windows/UrbanBridgePlugin.rhp`.
-2. В Rhino откройте **Tools → Options → Plug-ins**, нажмите **Install…** и выберите
-   этот `.rhp`. Убедитесь, что плагин включён.
-3. Откройте **View → Panels → Command History**. После загрузки должна появиться
-   строка `[UrbanBridge] Rhino bridge started at ws://localhost:7890.`.
+   `rhino-plugin/bin/Debug/net7.0/UrbanBridgePlugin.rhp`.
+2. В командной строке Rhino выполните `PlugInManager`, нажмите **Install…** и выберите
+   этот `.rhp`. Эта команда доступна и в Rhino for Windows, и в Rhino for Mac.
+   Убедитесь, что плагин включён.
+3. Откройте Command History. После загрузки должна появиться строка
+   `[UrbanBridge] Rhino bridge started at ws://localhost:7890`.
 
-> Если `HttpListener` не может открыть порт, освободите `7890` или измените
+> Если WebSocket-сервер не может открыть порт, освободите `7890` или измените
 > константу адреса одновременно в `BridgeServer.cs` и в `URBANBRIDGE_URL` у probe.
 
 ## Ручной end-to-end сценарий
