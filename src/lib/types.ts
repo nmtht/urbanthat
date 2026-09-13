@@ -19,13 +19,62 @@ export interface ObjectPayload {
   attributes: Record<string, string>;
 }
 
+// Stage 2 — road network
+
+export type RoadNodeType = 'dead_end' | 'through' | 'intersection';
+
+export interface RoadNodePayload {
+  id: string;
+  position: [number, number, number];
+  degree: number;
+  node_type: RoadNodeType;
+  connected_edge_ids: string[];
+}
+
+export interface RoadEdgePayload {
+  edge_id: string;
+  start_node_id: string;
+  end_node_id: string;
+  length_m: number;
+  road_class: string;
+  lanes: number;
+  width_m: number;
+}
+
+export type IssueSeverity = 'info' | 'warning' | 'error';
+
+export interface NetworkIssuePayload {
+  type: string;
+  severity: IssueSeverity;
+  message: string;
+  related_node_id?: string | null;
+  related_edge_ids?: string[];
+}
+
+export interface NetworkStatsPayload {
+  total_length_m: number;
+  length_by_class: Record<string, number>;
+  intersection_count: number;
+  dead_end_count: number;
+  component_count: number;
+}
+
+export interface RoadNetworkUpdateMessage {
+  type: 'road_network_update';
+  nodes: RoadNodePayload[];
+  edges: RoadEdgePayload[];
+  issues: NetworkIssuePayload[];
+  stats: NetworkStatsPayload;
+}
+
 export type BridgeMessage =
   | { type: 'full_sync'; document_id: string; units: string; objects: ObjectPayload[] }
   | { type: 'object_upserted'; object: ObjectPayload }
   | { type: 'batch_upsert'; objects: ObjectPayload[] }
   | { type: 'object_deleted'; id: string }
   | { type: 'heartbeat'; timestamp: number }
-  | { type: 'request_full_sync' };
+  | { type: 'request_full_sync' }
+  | RoadNetworkUpdateMessage;
 
 export type MessageType = BridgeMessage['type'];
 
