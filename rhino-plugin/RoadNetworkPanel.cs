@@ -1,4 +1,3 @@
-using Eto.Drawing;
 using Eto.Forms;
 using Rhino;
 using Rhino.UI;
@@ -6,83 +5,82 @@ using Rhino.UI;
 namespace UrbanBridge.Rhino;
 
 /// <summary>Rhino panel showing road-network statistics and validation issues.</summary>
+/// <remarks>
+/// Must stay a public type with GuidAttribute and a public parameterless constructor
+/// (Rhino creates the instance when the panel is first opened).
+/// </remarks>
 [System.Runtime.InteropServices.Guid("A3F8C2E1-9B4D-4E7A-8F1C-2D5E6A9B0C3D")]
-public sealed class RoadNetworkPanel : Panel, IPanel
+public class RoadNetworkPanel : Panel, IPanel
 {
     private readonly Label _totalLengthLabel = new() { Text = "Total length: —" };
     private readonly Label _intersectionsLabel = new() { Text = "Intersections: —" };
     private readonly Label _deadEndsLabel = new() { Text = "Dead ends: —" };
     private readonly Label _componentsLabel = new() { Text = "Components: —" };
     private readonly Label _byClassLabel = new() { Text = "By class: —" };
-    private readonly GridView _issuesGrid;
-    private readonly List<IssueRow> _issueRows = new();
+    private readonly TextArea _issuesText = new()
+    {
+        ReadOnly = true,
+        Wrap = true,
+        Height = 200,
+        Text = "No issues yet.\nAdd curves on layer Roads.",
+    };
     private BridgeServer? _server;
 
+    /// <summary>Same value as the GuidAttribute on this type.</summary>
     public static readonly System.Guid PanelId = new("A3F8C2E1-9B4D-4E7A-8F1C-2D5E6A9B0C3D");
 
     public RoadNetworkPanel()
     {
-        _issuesGrid = new GridView
-        {
-            DataStore = _issueRows,
-            Height = 220,
-        };
-        _issuesGrid.Columns.Add(new GridColumn
-        {
-            HeaderText = "Severity",
-            DataCell = new TextBoxCell { Binding = Binding.Property<IssueRow, string>(r => r.Severity) },
-            Width = 70,
-        });
-        _issuesGrid.Columns.Add(new GridColumn
-        {
-            HeaderText = "Type",
-            DataCell = new TextBoxCell { Binding = Binding.Property<IssueRow, string>(r => r.Type) },
-            Width = 140,
-        });
-        _issuesGrid.Columns.Add(new GridColumn
-        {
-            HeaderText = "Message",
-            DataCell = new TextBoxCell { Binding = Binding.Property<IssueRow, string>(r => r.Message) },
-            Width = 280,
-        });
-
-        _issuesGrid.SelectedItemsChanged += OnIssueSelected;
-
-        var refreshButton = new Button { Text = "Обновить" };
+        // Keep construction minimal — exceptions here make OpenPanel appear to succeed with no UI.
+        var refreshButton = new Button { Text = "Refresh / Обновить" };
         refreshButton.Click += (_, _) =>
         {
-            if (RhinoDoc.ActiveDoc is { } doc && UrbanBridgePlugin.Instance.Server is { } server)
-                server.RebuildAndSendRoadNetwork(doc);
+            try
+            {
+                if (RhinoDoc.ActiveDoc is { } doc && UrbanBridgePlugin.Instance?.Server is { } server)
+                    server.RebuildAndSendRoadNetwork(doc);
+            }
+            catch (Exception ex)
+            {
+                RhinoApp.WriteLine($"[UrbanBridge] Panel refresh error: {ex.Message}");
+            }
         };
 
-        Content = new StackLayout
+        Content = new Scrollable
         {
-            Padding = 8,
-            Spacing = 6,
-            HorizontalContentAlignment = HorizontalAlignment.Stretch,
-            Items =
+            Border = BorderType.None,
+            Content = new StackLayout
             {
-                new Label { Text = "Road Network", Font = SystemFonts.Bold() },
-                _totalLengthLabel,
-                _intersectionsLabel,
-                _deadEndsLabel,
-                _componentsLabel,
-                _byClassLabel,
-                new Label { Text = "Issues", Font = SystemFonts.Bold() },
-                new Scrollable { Content = _issuesGrid, ExpandContentWidth = true, ExpandContentHeight = true },
-                refreshButton,
+                Padding = 10,
+                Spacing = 6,
+                HorizontalContentAlignment = HorizontalAlignment.Stretch,
+                Items =
+                {
+                    new Label { Text = "Road Network", Font = Fonts.Sans(12, FontStyle.Bold) },
+                    _totalLengthLabel,
+                    _intersectionsLabel,
+                    _deadEndsLabel,
+                    _componentsLabel,
+                    _byClassLabel,
+                    new Label { Text = "Issues", Font = Fonts.Sans(11, FontStyle.Bold) },
+                    _issuesText,
+                    refreshButton,
+                },
             },
         };
+
+        RhinoApp.WriteLine("[UrbanBridge] RoadNetworkPanel instance created.");
     }
 
     /// <inheritdoc />
     public void PanelShown(uint documentSerialNumber, ShowPanelReason reason)
     {
-        // Subscribe only when the panel becomes visible (not on temporary deactivate restore).
+        RhinoApp.WriteLine($"[UrbanBridge] PanelShown reason={reason} docSN={documentSerialNumber}");
+
         if (reason is not (ShowPanelReason.Show or ShowPanelReason.ShowOnDeactivate))
             return;
 
-        _server = UrbanBridgePlugin.Instance.Server;
+        _server = UrbanBridgePlugin.Instance?.Server;
         if (_server is null) return;
 
         _server.RoadNetworkUpdated -= OnRoadNetworkUpdated;
@@ -97,7 +95,7 @@ public sealed class RoadNetworkPanel : Panel, IPanel
     /// <inheritdoc />
     public void PanelHidden(uint documentSerialNumber, ShowPanelReason reason)
     {
-        // Keep subscription while temporarily hidden on app deactivate.
+        RhinoApp.WriteLine($"[UrbanBridge] PanelHidden reason={reason}");
         if (reason == ShowPanelReason.HideOnDeactivate)
             return;
 
@@ -108,6 +106,7 @@ public sealed class RoadNetworkPanel : Panel, IPanel
     /// <inheritdoc />
     public void PanelClosing(uint documentSerialNumber, bool onCloseDocument)
     {
+        RhinoApp.WriteLine($"[UrbanBridge] PanelClosing onCloseDocument={onCloseDocument}");
         if (_server is not null)
             _server.RoadNetworkUpdated -= OnRoadNetworkUpdated;
         _server = null;
@@ -115,7 +114,7 @@ public sealed class RoadNetworkPanel : Panel, IPanel
 
     private void OnRoadNetworkUpdated(RoadNetworkGraph graph)
     {
-        Application.Instance.AsyncInvoke(() =>
+        void Apply()
         {
             _totalLengthLabel.Text = $"Total length: {graph.Stats.TotalLengthM:F1} m";
             _intersectionsLabel.Text = $"Intersections: {graph.Stats.IntersectionCount}";
@@ -134,63 +133,30 @@ public sealed class RoadNetworkPanel : Panel, IPanel
                 _byClassLabel.Text = "By class: —";
             }
 
-            _issueRows.Clear();
-            foreach (var issue in graph.Issues
-                         .OrderByDescending(i => i.Severity)
-                         .ThenBy(i => i.Type))
+            if (graph.Issues.Count == 0)
             {
-                _issueRows.Add(new IssueRow
-                {
-                    Severity = issue.Severity.ToString(),
-                    Type = issue.Type,
-                    Message = issue.Message,
-                    RelatedEdgeIds = issue.RelatedEdgeIds.ToList(),
-                    RelatedNodeId = issue.RelatedNodeId,
-                });
+                _issuesText.Text = "No issues.";
             }
-            _issuesGrid.DataStore = null;
-            _issuesGrid.DataStore = _issueRows;
-        });
-    }
-
-    private void OnIssueSelected(object? sender, EventArgs e)
-    {
-        if (_issuesGrid.SelectedItem is not IssueRow row) return;
-        if (RhinoDoc.ActiveDoc is not { } doc) return;
-
-        doc.Objects.UnselectAll();
-        var bbox = global::Rhino.Geometry.BoundingBox.Empty;
-
-        foreach (var edgeId in row.RelatedEdgeIds)
-        {
-            var obj = doc.Objects.FindId(edgeId);
-            if (obj is null) continue;
-            obj.Select(true);
-            var objBbox = obj.Geometry.GetBoundingBox(true);
-            if (bbox.IsValid) bbox.Union(objBbox);
-            else bbox = objBbox;
-        }
-
-        if (bbox.IsValid)
-        {
-            foreach (var view in doc.Views)
+            else
             {
-                view.ActiveViewport.ZoomBoundingBox(bbox);
-                view.Redraw();
+                var lines = graph.Issues
+                    .OrderByDescending(i => i.Severity)
+                    .ThenBy(i => i.Type)
+                    .Select(i => $"[{i.Severity}] {i.Type}: {i.Message}");
+                _issuesText.Text = string.Join("\n", lines);
             }
         }
-        else
-        {
-            doc.Views.Redraw();
-        }
-    }
 
-    private sealed class IssueRow
-    {
-        public string Severity { get; set; } = "";
-        public string Type { get; set; } = "";
-        public string Message { get; set; } = "";
-        public List<Guid> RelatedEdgeIds { get; set; } = new();
-        public string? RelatedNodeId { get; set; }
+        try
+        {
+            if (Application.Instance != null)
+                Application.Instance.AsyncInvoke(Apply);
+            else
+                Apply();
+        }
+        catch
+        {
+            Apply();
+        }
     }
 }

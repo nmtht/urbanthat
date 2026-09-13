@@ -28,9 +28,18 @@ public sealed class UrbanBridgePlugin : PlugIn
             _documentEvents = new DocumentEventHandlers(_server);
             _documentEvents.Subscribe();
 
-            Panels.RegisterPanel(this, typeof(RoadNetworkPanel), "Road Network", null);
+            // Explicit PerDoc + non-null caption. Icon null is allowed; Mac still shows caption as tooltip.
+            Panels.RegisterPanel(
+                this,
+                typeof(RoadNetworkPanel),
+                "Road Network",
+                icon: null,
+                panelType: PanelType.PerDoc);
 
-            RhinoApp.WriteLine("[UrbanBridge] Rhino bridge started at ws://localhost:7890.");
+            var typeGuid = typeof(RoadNetworkPanel).GUID;
+            RhinoApp.WriteLine($"[UrbanBridge] Rhino bridge started at ws://localhost:7890.");
+            RhinoApp.WriteLine($"[UrbanBridge] Road Network panel registered. Guid={typeGuid}");
+            RhinoApp.WriteLine("[UrbanBridge] Open panel: UrbanBridgeRoadNetwork");
             return LoadReturnCode.Success;
         }
         catch (Exception exception)

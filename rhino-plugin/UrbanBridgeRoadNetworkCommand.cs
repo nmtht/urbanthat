@@ -11,28 +11,70 @@ public sealed class UrbanBridgeRoadNetworkCommand : Command
 
     protected override Result RunCommand(RhinoDoc doc, RunMode mode)
     {
-        var panelId = RoadNetworkPanel.PanelId;
+        var panelType = typeof(RoadNetworkPanel);
+        var panelId = panelType.GUID;
 
-        // Ensure panel type is registered (safe if already done in OnLoad).
+        RhinoApp.WriteLine($"[UrbanBridge] Panel type GUID: {panelId}");
+        RhinoApp.WriteLine($"[UrbanBridge] Static PanelId:   {RoadNetworkPanel.PanelId}");
+        RhinoApp.WriteLine($"[UrbanBridge] IsPanelVisible:   {Panels.IsPanelVisible(panelId)}");
+
+        // Re-register is safe; ensures type is known after hot-reload / partial load.
         try
         {
-            Panels.RegisterPanel(UrbanBridgePlugin.Instance, typeof(RoadNetworkPanel), "Road Network", null);
+            Panels.RegisterPanel(
+                UrbanBridgePlugin.Instance,
+                panelType,
+                "Road Network",
+                icon: null,
+                panelType: PanelType.PerDoc);
         }
-        catch
+        catch (Exception ex)
         {
-            // Already registered — ignore.
+            RhinoApp.WriteLine($"[UrbanBridge] RegisterPanel note: {ex.Message}");
         }
 
-        if (!Panels.IsPanelVisible(panelId))
-            Panels.OpenPanel(panelId);
-        else
-            Panels.OpenPanel(panelId); // bring to front / select tab
+        // Prefer sibling of Layers — more reliable on Mac than floating OpenPanel alone.
+        var openedAsSibling = false;
+        try
+        {
+            openedAsSibling = Panels.OpenPanelAsSibling(panelId, PanelIds.Layers, makeSelectedPanel: true);
+            RhinoApp.WriteLine($"[UrbanBridge] OpenPanelAsSibling(Layers): {openedAsSibling}");
+        }
+        catch (Exception ex)
+        {
+            RhinoApp.WriteLine($"[UrbanBridge] OpenPanelAsSibling failed: {ex.Message}");
+        }
 
-        // Trigger a rebuild so the panel has data immediately.
+        if (!openedAsSibling)
+        {
+            try
+            {
+                Panels.OpenPanel(panelId);
+                RhinoApp.WriteLine("[UrbanBridge] OpenPanel(Guid) called.");
+            }
+            catch (Exception ex)
+            {
+                RhinoApp.WriteLine($"[UrbanBridge] OpenPanel(Guid) failed: {ex.Message}");
+            }
+
+            try
+            {
+                Panels.OpenPanel(panelType);
+                RhinoApp.WriteLine("[UrbanBridge] OpenPanel(Type) called.");
+            }
+            catch (Exception ex)
+            {
+                RhinoApp.WriteLine($"[UrbanBridge] OpenPanel(Type) failed: {ex.Message}");
+            }
+        }
+
+        RhinoApp.WriteLine($"[UrbanBridge] IsPanelVisible after open: {Panels.IsPanelVisible(panelId)}");
+
         if (UrbanBridgePlugin.Instance?.Server is { } server && doc is not null)
             server.RebuildAndSendRoadNetwork(doc);
 
-        RhinoApp.WriteLine("[UrbanBridge] Road Network panel opened.");
+        // Hint for Mac users where the tab may appear.
+        RhinoApp.WriteLine("[UrbanBridge] Look for tab 'Road Network' next to Layers / Properties, or Window → Panels.");
         return Result.Success;
     }
 }
