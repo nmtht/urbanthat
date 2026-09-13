@@ -1,5 +1,6 @@
 using Rhino;
 using Rhino.PlugIns;
+using Rhino.UI;
 
 namespace UrbanBridge.Rhino;
 
@@ -26,6 +27,9 @@ public sealed class UrbanBridgePlugin : PlugIn
             _server.Start();
             _documentEvents = new DocumentEventHandlers(_server);
             _documentEvents.Subscribe();
+
+            Panels.RegisterPanel(this, typeof(RoadNetworkPanel), "Road Network", null);
+
             RhinoApp.WriteLine("[UrbanBridge] Rhino bridge started at ws://localhost:7890.");
             return LoadReturnCode.Success;
         }
