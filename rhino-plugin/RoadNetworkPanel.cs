@@ -56,13 +56,13 @@ public class RoadNetworkPanel : Panel, IPanel
                 HorizontalContentAlignment = HorizontalAlignment.Stretch,
                 Items =
                 {
-                    new Label { Text = "Road Network", Font = Fonts.Sans(12, FontStyle.Bold) },
+                    new Label { Text = "Road Network" },
                     _totalLengthLabel,
                     _intersectionsLabel,
                     _deadEndsLabel,
                     _componentsLabel,
                     _byClassLabel,
-                    new Label { Text = "Issues", Font = Fonts.Sans(11, FontStyle.Bold) },
+                    new Label { Text = "Issues" },
                     _issuesText,
                     refreshButton,
                 },
