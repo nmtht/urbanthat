@@ -1,4 +1,3 @@
-using System.ComponentModel;
 using Eto.Drawing;
 using Eto.Forms;
 using Rhino;
@@ -76,9 +75,13 @@ public sealed class RoadNetworkPanel : Panel, IPanel
         };
     }
 
-    public void PanelShown(uint documentSerialNumber, bool on)
+    /// <inheritdoc />
+    public void PanelShown(uint documentSerialNumber, ShowPanelReason reason)
     {
-        if (!on) return;
+        // Subscribe only when the panel becomes visible (not on temporary deactivate restore).
+        if (reason is not (ShowPanelReason.Show or ShowPanelReason.ShowOnDeactivate))
+            return;
+
         _server = UrbanBridgePlugin.Instance.Server;
         if (_server is null) return;
 
@@ -91,12 +94,23 @@ public sealed class RoadNetworkPanel : Panel, IPanel
             _server.RebuildAndSendRoadNetwork(doc);
     }
 
-    public void PanelHidden(uint documentSerialNumber, bool on) { }
+    /// <inheritdoc />
+    public void PanelHidden(uint documentSerialNumber, ShowPanelReason reason)
+    {
+        // Keep subscription while temporarily hidden on app deactivate.
+        if (reason == ShowPanelReason.HideOnDeactivate)
+            return;
 
-    public void PanelClosing(uint documentSerialNumber, bool on)
+        if (_server is not null)
+            _server.RoadNetworkUpdated -= OnRoadNetworkUpdated;
+    }
+
+    /// <inheritdoc />
+    public void PanelClosing(uint documentSerialNumber, bool onCloseDocument)
     {
         if (_server is not null)
             _server.RoadNetworkUpdated -= OnRoadNetworkUpdated;
+        _server = null;
     }
 
     private void OnRoadNetworkUpdated(RoadNetworkGraph graph)
@@ -159,8 +173,7 @@ public sealed class RoadNetworkPanel : Panel, IPanel
 
         if (bbox.IsValid)
         {
-            var views = doc.Views;
-            foreach (var view in views)
+            foreach (var view in doc.Views)
             {
                 view.ActiveViewport.ZoomBoundingBox(bbox);
                 view.Redraw();
