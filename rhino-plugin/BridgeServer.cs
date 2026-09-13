@@ -22,10 +22,17 @@ public sealed class BridgeServer : IDisposable
     private readonly object _upsertsLock = new();
     private readonly Dictionary<Guid, ObjectPayload> _pendingUpserts = new();
     private readonly CancellationTokenSource _stopping = new();
+    private readonly RoadNetworkGraphBuilder _roadBuilder = new();
+    private readonly RoadNetworkValidator _roadValidator = new();
     private TcpListener? _listener;
     private Task? _acceptLoop;
     private Timer? _heartbeat;
     private Timer? _upsertTimer;
+
+    /// <summary>Latest computed road network (for the Rhino panel).</summary>
+    public RoadNetworkGraph? LatestRoadNetwork { get; private set; }
+
+    public event Action<RoadNetworkGraph>? RoadNetworkUpdated;
 
     public bool IsRunning => _listener is not null;
     public int ClientCount { get { lock (_clientsLock) return _clients.Count; } }
@@ -82,6 +89,81 @@ public sealed class BridgeServer : IDisposable
         _ = BroadcastAsync(new BridgeMessage("full_sync", Objects: objects, DocumentId: document.RuntimeSerialNumber.ToString(), Units: "meters"));
     }
 
+    /// <summary>Full rebuild of the road graph + validation + broadcast of road_network_update.</summary>
+    public void RebuildAndSendRoadNetwork(RhinoDoc document)
+    {
+        try
+        {
+            var graph = _roadBuilder.Build(document);
+            _roadValidator.Validate(document, graph);
+            LatestRoadNetwork = graph;
+            RoadNetworkUpdated?.Invoke(graph);
+
+            var payload = SerializeRoadNetwork(graph);
+            _ = BroadcastAsync(payload);
+        }
+        catch (Exception ex)
+        {
+            RhinoApp.WriteLine($"[UrbanBridge] Road network error: {ex.Message}");
+        }
+    }
+
+    private static object SerializeRoadNetwork(RoadNetworkGraph graph)
+    {
+        var nodes = graph.Nodes.Select(n => new Dictionary<string, object?>
+        {
+            ["id"] = n.Id,
+            ["position"] = new[] { n.Position.X, n.Position.Y, n.Position.Z },
+            ["degree"] = n.Degree,
+            ["node_type"] = n.Type.ToString().ToLowerInvariant() switch
+            {
+                "deadend" => "dead_end",
+                "through" => "through",
+                "intersection" => "intersection",
+                _ => n.Type.ToString().ToLowerInvariant()
+            },
+            ["connected_edge_ids"] = n.ConnectedEdgeIds.Select(id => id.ToString()).ToList(),
+        }).ToList();
+
+        var edges = graph.Edges.Select(e => new Dictionary<string, object?>
+        {
+            ["edge_id"] = e.RhinoObjectId.ToString(),
+            ["start_node_id"] = e.StartNodeId,
+            ["end_node_id"] = e.EndNodeId,
+            ["length_m"] = e.LengthMeters,
+            ["road_class"] = e.RoadClass,
+            ["lanes"] = e.Lanes,
+            ["width_m"] = e.WidthMeters,
+        }).ToList();
+
+        var issues = graph.Issues.Select(i => new Dictionary<string, object?>
+        {
+            ["type"] = i.Type,
+            ["severity"] = i.Severity.ToString().ToLowerInvariant(),
+            ["message"] = i.Message,
+            ["related_node_id"] = i.RelatedNodeId,
+            ["related_edge_ids"] = i.RelatedEdgeIds.Select(id => id.ToString()).ToList(),
+        }).ToList();
+
+        var stats = new Dictionary<string, object?>
+        {
+            ["total_length_m"] = graph.Stats.TotalLengthM,
+            ["length_by_class"] = graph.Stats.LengthByClass,
+            ["intersection_count"] = graph.Stats.IntersectionCount,
+            ["dead_end_count"] = graph.Stats.DeadEndCount,
+            ["component_count"] = graph.Stats.ComponentCount,
+        };
+
+        return new Dictionary<string, object?>
+        {
+            ["type"] = "road_network_update",
+            ["nodes"] = nodes,
+            ["edges"] = edges,
+            ["issues"] = issues,
+            ["stats"] = stats,
+        };
+    }
+
     private async Task AcceptLoopAsync(CancellationToken cancellationToken)
     {
         try
@@ -135,7 +217,11 @@ public sealed class BridgeServer : IDisposable
                 if (message.RootElement.TryGetProperty("type", out var type) && type.GetString() == "request_full_sync")
                     RhinoApp.InvokeOnUiThread((Action)(() =>
                     {
-                        if (RhinoDoc.ActiveDoc is { } document) SendFullSync(document);
+                        if (RhinoDoc.ActiveDoc is { } document)
+                        {
+                            SendFullSync(document);
+                            RebuildAndSendRoadNetwork(document);
+                        }
                     }));
             }
             catch (JsonException exception)
@@ -145,7 +231,7 @@ public sealed class BridgeServer : IDisposable
         }
     }
 
-    private async Task BroadcastAsync(BridgeMessage message)
+    private async Task BroadcastAsync(object message)
     {
         var payload = JsonSerializer.Serialize(message, JsonOptions);
         BridgeClient[] clients;
