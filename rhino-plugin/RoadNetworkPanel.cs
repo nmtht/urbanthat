@@ -159,7 +159,7 @@ public sealed class RoadNetworkPanel : Panel, IPanel
         if (RhinoDoc.ActiveDoc is not { } doc) return;
 
         doc.Objects.UnselectAll();
-        var bbox = Rhino.Geometry.BoundingBox.Empty;
+        var bbox = global::Rhino.Geometry.BoundingBox.Empty;
 
         foreach (var edgeId in row.RelatedEdgeIds)
         {
