@@ -118,9 +118,19 @@ public sealed class ZoneRoadAccessChecker
 
     private static bool IsNearRoadway(Point3d pt, List<Brep> roadways, double threshold)
     {
+        // RhinoCommon 8: ClosestPoint requires the full out-parameter signature.
+        // maximumDistance limits the search; success implies a hit within threshold.
+        var maxDist = threshold > 0 ? threshold : 1e9;
         foreach (var brep in roadways)
         {
-            if (brep.ClosestPoint(pt, out var closest))
+            if (brep.ClosestPoint(
+                    pt,
+                    out Point3d closest,
+                    out ComponentIndex _,
+                    out double _,
+                    out double _,
+                    maxDist,
+                    out Vector3d _))
             {
                 if (pt.DistanceTo(closest) <= threshold)
                     return true;
