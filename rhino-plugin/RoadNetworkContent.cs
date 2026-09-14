@@ -194,7 +194,6 @@ public sealed class RoadNetworkContent : Panel
 
         try
         {
-            // Ensure graph is current
             var server = UrbanBridgePlugin.Instance?.Server;
             if (server is not null)
                 server.RebuildAndSendRoadNetwork(doc);
@@ -211,11 +210,12 @@ public sealed class RoadNetworkContent : Panel
             var generator = new RoadSurfaceGenerator(doc);
             var result = generator.Generate(doc, graph);
 
-            // Push updated issues (acute / generation_failed) to panel + clients
             if (server is not null)
             {
-                // Re-broadcast graph with extra issues without full rebuild of topology
+                server.MarkRoadSurfaceGenerated();
                 server.NotifyRoadNetworkUpdated(graph);
+                // Refresh zone road-access against new surfaces
+                server.RebuildZoneAnalysis(doc);
             }
             else
             {
