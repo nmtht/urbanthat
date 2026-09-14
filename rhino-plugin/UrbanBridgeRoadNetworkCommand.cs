@@ -5,7 +5,7 @@ using Rhino.UI;
 
 namespace UrbanBridge.Rhino;
 
-/// <summary>Opens (or focuses) the Road Network dockable panel.</summary>
+/// <summary>Opens the Road Network UI (dockable panel if possible, otherwise floating window).</summary>
 [Guid("F1A2B3C4-D5E6-4F7A-8B9C-0D1E2F3A4B5C")]
 public sealed class UrbanBridgeRoadNetworkCommand : Command
 {
@@ -16,78 +16,54 @@ public sealed class UrbanBridgeRoadNetworkCommand : Command
         var plugin = UrbanBridgePlugin.Instance;
         if (plugin is null)
         {
-            RhinoApp.WriteLine("[UrbanBridge] Plugin instance is null.");
+            RhinoApp.WriteLine("[UrbanBridge] Plugin instance is null — is the plug-in loaded?");
             return Result.Failure;
         }
 
         RhinoApp.WriteLine($"[UrbanBridge] PlugIn.Id = {plugin.Id}");
-        if (plugin.Id == System.Guid.Empty)
-        {
-            RhinoApp.WriteLine("[UrbanBridge] ERROR: PlugIn.Id is empty. Rebuild with GuidAttribute on UrbanBridgePlugin.");
-            return Result.Failure;
-        }
+        RhinoApp.WriteLine($"[UrbanBridge] Type.GUID = {typeof(UrbanBridgePlugin).GUID}");
+        RhinoApp.WriteLine($"[UrbanBridge] Server running = {plugin.Server?.IsRunning == true}");
 
-        var panelType = typeof(RoadNetworkPanel);
-        var panelId = panelType.GUID;
-
-        RhinoApp.WriteLine($"[UrbanBridge] Panel type GUID: {panelId}");
-        RhinoApp.WriteLine($"[UrbanBridge] IsPanelVisible before: {Panels.IsPanelVisible(panelId)}");
-
-        try
+        // Prefer dockable panel when Id is valid.
+        if (plugin.Id != System.Guid.Empty)
         {
-            Panels.RegisterPanel(
-                plugin,
-                panelType,
-                "Road Network",
-                icon: null,
-                panelType: PanelType.PerDoc);
-            RhinoApp.WriteLine("[UrbanBridge] RegisterPanel OK");
-        }
-        catch (Exception ex)
-        {
-            RhinoApp.WriteLine($"[UrbanBridge] RegisterPanel: {ex.Message}");
-        }
-
-        var openedAsSibling = false;
-        try
-        {
-            openedAsSibling = Panels.OpenPanelAsSibling(panelId, PanelIds.Layers, makeSelectedPanel: true);
-            RhinoApp.WriteLine($"[UrbanBridge] OpenPanelAsSibling(Layers): {openedAsSibling}");
-        }
-        catch (Exception ex)
-        {
-            RhinoApp.WriteLine($"[UrbanBridge] OpenPanelAsSibling failed: {ex.Message}");
-        }
-
-        if (!openedAsSibling)
-        {
+            var panelType = typeof(RoadNetworkPanel);
+            var panelId = panelType.GUID;
             try
             {
+                Panels.RegisterPanel(plugin, panelType, "Road Network", null, PanelType.PerDoc);
+            }
+            catch (Exception ex)
+            {
+                RhinoApp.WriteLine($"[UrbanBridge] RegisterPanel: {ex.Message}");
+            }
+
+            try
+            {
+                var ok = Panels.OpenPanelAsSibling(panelId, PanelIds.Layers, true);
+                RhinoApp.WriteLine($"[UrbanBridge] OpenPanelAsSibling: {ok}, visible={Panels.IsPanelVisible(panelId)}");
+                if (ok || Panels.IsPanelVisible(panelId))
+                {
+                    plugin.Server?.RebuildAndSendRoadNetwork(doc);
+                    return Result.Success;
+                }
+
                 Panels.OpenPanel(panelId);
-                RhinoApp.WriteLine("[UrbanBridge] OpenPanel(Guid) called");
+                if (Panels.IsPanelVisible(panelId))
+                {
+                    plugin.Server?.RebuildAndSendRoadNetwork(doc);
+                    return Result.Success;
+                }
             }
             catch (Exception ex)
             {
-                RhinoApp.WriteLine($"[UrbanBridge] OpenPanel(Guid) failed: {ex.Message}");
-            }
-
-            try
-            {
-                Panels.OpenPanel(panelType);
-                RhinoApp.WriteLine("[UrbanBridge] OpenPanel(Type) called");
-            }
-            catch (Exception ex)
-            {
-                RhinoApp.WriteLine($"[UrbanBridge] OpenPanel(Type) failed: {ex.Message}");
+                RhinoApp.WriteLine($"[UrbanBridge] Panel open failed: {ex.Message}");
             }
         }
 
-        RhinoApp.WriteLine($"[UrbanBridge] IsPanelVisible after: {Panels.IsPanelVisible(panelId)}");
-
-        if (plugin.Server is { } server && doc is not null)
-            server.RebuildAndSendRoadNetwork(doc);
-
-        RhinoApp.WriteLine("[UrbanBridge] Look for tab 'Road Network' next to Layers / Properties.");
+        // Fallback: modeless Eto window (always works on Mac/Windows).
+        RhinoApp.WriteLine("[UrbanBridge] Opening floating Road Network window…");
+        RoadNetworkForm.ShowOrFocus();
         return Result.Success;
     }
 }

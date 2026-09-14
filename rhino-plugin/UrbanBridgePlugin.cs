@@ -5,11 +5,7 @@ using Rhino.UI;
 
 namespace UrbanBridge.Rhino;
 
-/// <summary>Entry point for the Rhino-side, one-way UrbanBridge synchronizer.</summary>
-/// <remarks>
-/// GuidAttribute is required: without it PlugIn.Id is Guid.Empty and
-/// Panels.RegisterPanel throws (panel never appears in the UI).
-/// </remarks>
+/// <summary>Entry point for the Rhino-side UrbanBridge synchronizer.</summary>
 [Guid("E8C3A1F2-4B7D-4E9A-8C1F-3D6E9B0A2C5D")]
 public sealed class UrbanBridgePlugin : PlugIn
 {
@@ -29,29 +25,46 @@ public sealed class UrbanBridgePlugin : PlugIn
     {
         try
         {
-            RhinoApp.WriteLine($"[UrbanBridge] PlugIn.Id = {Id}");
-            if (Id == System.Guid.Empty)
-            {
-                errorMessage = "UrbanBridge PlugIn.Id is Guid.Empty — GuidAttribute missing on plugin class.";
-                RhinoApp.WriteLine($"[UrbanBridge] {errorMessage}");
-                return LoadReturnCode.ErrorShowDialog;
-            }
+            var typeGuid = typeof(UrbanBridgePlugin).GUID;
+            var asmGuid = GetType().Assembly.GetCustomAttributes(typeof(GuidAttribute), false)
+                .OfType<GuidAttribute>()
+                .FirstOrDefault()?.Value;
 
+            RhinoApp.WriteLine($"[UrbanBridge] PlugIn.Id = {Id}");
+            RhinoApp.WriteLine($"[UrbanBridge] Type.GUID = {typeGuid}");
+            RhinoApp.WriteLine($"[UrbanBridge] Assembly Guid = {asmGuid}");
+
+            // Always start the bridge — UI is secondary.
             _server = new BridgeServer();
             _server.Start();
             _documentEvents = new DocumentEventHandlers(_server);
             _documentEvents.Subscribe();
-
-            Panels.RegisterPanel(
-                this,
-                typeof(RoadNetworkPanel),
-                "Road Network",
-                icon: null,
-                panelType: PanelType.PerDoc);
-
             RhinoApp.WriteLine("[UrbanBridge] Rhino bridge started at ws://localhost:7890.");
-            RhinoApp.WriteLine($"[UrbanBridge] Road Network panel registered. PanelGuid={typeof(RoadNetworkPanel).GUID}");
-            RhinoApp.WriteLine("[UrbanBridge] Open panel: UrbanBridgeRoadNetwork");
+
+            if (Id == System.Guid.Empty)
+            {
+                RhinoApp.WriteLine("[UrbanBridge] WARNING: PlugIn.Id is still Empty — dockable panel may fail.");
+                RhinoApp.WriteLine("[UrbanBridge] Use UrbanBridgeRoadNetwork for the floating window fallback.");
+            }
+            else
+            {
+                try
+                {
+                    Panels.RegisterPanel(
+                        this,
+                        typeof(RoadNetworkPanel),
+                        "Road Network",
+                        icon: null,
+                        panelType: PanelType.PerDoc);
+                    RhinoApp.WriteLine($"[UrbanBridge] Road Network panel registered. PanelGuid={typeof(RoadNetworkPanel).GUID}");
+                }
+                catch (Exception ex)
+                {
+                    RhinoApp.WriteLine($"[UrbanBridge] RegisterPanel failed: {ex.Message}");
+                }
+            }
+
+            RhinoApp.WriteLine("[UrbanBridge] Open UI: UrbanBridgeRoadNetwork");
             return LoadReturnCode.Success;
         }
         catch (Exception exception)
