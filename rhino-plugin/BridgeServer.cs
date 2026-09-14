@@ -24,6 +24,7 @@ public sealed class BridgeServer : IDisposable
     private readonly CancellationTokenSource _stopping = new();
     private readonly RoadNetworkGraphBuilder _roadBuilder = new();
     private readonly RoadNetworkValidator _roadValidator = new();
+    private readonly ZoneAnalysisService _zoneService = new();
     private TcpListener? _listener;
     private Task? _acceptLoop;
     private Timer? _heartbeat;
@@ -32,7 +33,16 @@ public sealed class BridgeServer : IDisposable
     /// <summary>Latest computed road network (for the Rhino panel).</summary>
     public RoadNetworkGraph? LatestRoadNetwork { get; private set; }
 
+    public ZoneAnalysis? LatestZoneAnalysis { get; private set; }
+
+    /// <summary>UTC time of last change affecting the road centerline graph.</summary>
+    public DateTime? LastRoadGraphChangeUtc { get; private set; }
+
+    /// <summary>UTC time of last successful Generate Road Surfaces run.</summary>
+    public DateTime? LastRoadSurfaceGenUtc { get; private set; }
+
     public event Action<RoadNetworkGraph>? RoadNetworkUpdated;
+    public event Action<ZoneAnalysis>? ZoneAnalysisUpdated;
 
     public bool IsRunning => _listener is not null;
     public int ClientCount { get { lock (_clientsLock) return _clients.Count; } }
@@ -44,6 +54,13 @@ public sealed class BridgeServer : IDisposable
         _acceptLoop = Task.Run(() => AcceptLoopAsync(_stopping.Token));
         _heartbeat = new Timer(_ => _ = BroadcastAsync(new BridgeMessage("heartbeat", Timestamp: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds())), null,
             TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
+    }
+
+    public void MarkRoadGraphChanged() => LastRoadGraphChangeUtc = DateTime.UtcNow;
+
+    public void MarkRoadSurfaceGenerated()
+    {
+        LastRoadSurfaceGenUtc = DateTime.UtcNow;
     }
 
     /// <summary>Coalesces changes occurring in the same short Rhino operation into batch_upsert.</summary>
@@ -108,15 +125,26 @@ public sealed class BridgeServer : IDisposable
         }
     }
 
-    /// <summary>
-    /// Push an already-updated graph (e.g. after surface generation added extra issues)
-    /// to the panel and WebSocket clients without rebuilding topology.
-    /// </summary>
     public void NotifyRoadNetworkUpdated(RoadNetworkGraph graph)
     {
         LatestRoadNetwork = graph;
         RoadNetworkUpdated?.Invoke(graph);
         _ = BroadcastAsync(SerializeRoadNetwork(graph));
+    }
+
+    /// <summary>Rebuild zone metrics, validation, and road-access checks.</summary>
+    public void RebuildZoneAnalysis(RhinoDoc document)
+    {
+        try
+        {
+            var analysis = _zoneService.Analyze(document, LastRoadGraphChangeUtc, LastRoadSurfaceGenUtc);
+            LatestZoneAnalysis = analysis;
+            ZoneAnalysisUpdated?.Invoke(analysis);
+        }
+        catch (Exception ex)
+        {
+            RhinoApp.WriteLine($"[UrbanBridge] Zone analysis error: {ex.Message}");
+        }
     }
 
     private static object SerializeRoadNetwork(RoadNetworkGraph graph)
@@ -232,6 +260,7 @@ public sealed class BridgeServer : IDisposable
                         {
                             SendFullSync(document);
                             RebuildAndSendRoadNetwork(document);
+                            RebuildZoneAnalysis(document);
                         }
                     }));
             }
