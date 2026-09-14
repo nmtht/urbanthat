@@ -4,18 +4,18 @@ using Rhino;
 namespace UrbanBridge.Rhino;
 
 /// <summary>
-/// Modeless Eto window — works even when PlugIn.Id is Empty and dockable panels cannot register.
+/// Single modeless window for the whole plugin (Roads / Zoning / Dashboard tabs).
 /// </summary>
 public sealed class RoadNetworkForm : Form
 {
     private static RoadNetworkForm? _openInstance;
-    private readonly RoadNetworkContent _content = new();
+    private readonly UrbanBridgeMainContent _content = new();
 
     private RoadNetworkForm()
     {
-        Title = "UrbanBridge — Road Network";
-        ClientSize = new Eto.Drawing.Size(440, 560);
-        MinimumSize = new Eto.Drawing.Size(320, 400);
+        Title = "UrbanBridge";
+        ClientSize = new Eto.Drawing.Size(460, 620);
+        MinimumSize = new Eto.Drawing.Size(340, 420);
         Padding = 0;
         Content = _content;
 
@@ -27,13 +27,14 @@ public sealed class RoadNetworkForm : Form
         };
     }
 
-    public static void ShowOrFocus()
+    /// <param name="tabIndex">0=Roads, 1=Zoning, 2=Dashboard</param>
+    public static void ShowOrFocus(int tabIndex = 0)
     {
         if (_openInstance is not null)
         {
             _openInstance.BringToFront();
-            _openInstance._content.RebuildGraph();
-            _openInstance._content.RefreshSelectionLabel();
+            _openInstance._content.SelectTab(tabIndex);
+            _openInstance._content.RefreshAll();
             return;
         }
 
@@ -41,8 +42,8 @@ public sealed class RoadNetworkForm : Form
         _openInstance = form;
         form.Owner = global::Rhino.UI.RhinoEtoApp.MainWindow;
         form._content.AttachServer(UrbanBridgePlugin.Instance?.Server);
-        form._content.RebuildGraph();
-        form._content.RefreshSelectionLabel();
+        form._content.SelectTab(tabIndex);
+        form._content.RefreshAll();
         form.Show();
     }
 }

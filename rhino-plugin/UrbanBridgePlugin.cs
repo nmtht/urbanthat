@@ -25,14 +25,7 @@ public sealed class UrbanBridgePlugin : PlugIn
     {
         try
         {
-            var typeGuid = typeof(UrbanBridgePlugin).GUID;
-            var asmGuid = GetType().Assembly.GetCustomAttributes(typeof(GuidAttribute), false)
-                .OfType<GuidAttribute>()
-                .FirstOrDefault()?.Value;
-
             RhinoApp.WriteLine($"[UrbanBridge] PlugIn.Id = {Id}");
-            RhinoApp.WriteLine($"[UrbanBridge] Type.GUID = {typeGuid}");
-            RhinoApp.WriteLine($"[UrbanBridge] Assembly Guid = {asmGuid}");
 
             _server = new BridgeServer();
             _server.Start();
@@ -44,15 +37,15 @@ public sealed class UrbanBridgePlugin : PlugIn
             {
                 try
                 {
-                    Panels.RegisterPanel(this, typeof(RoadNetworkPanel), "Road Network", null, PanelType.PerDoc);
+                    Panels.RegisterPanel(this, typeof(RoadNetworkPanel), "UrbanBridge", null, PanelType.PerDoc);
                 }
                 catch (Exception ex)
                 {
-                    RhinoApp.WriteLine($"[UrbanBridge] RegisterPanel Road Network: {ex.Message}");
+                    RhinoApp.WriteLine($"[UrbanBridge] RegisterPanel: {ex.Message}");
                 }
             }
 
-            RhinoApp.WriteLine("[UrbanBridge] Commands: UrbanBridgeRoadNetwork | UrbanBridgeZones | UrbanBridgeDashboard | UrbanBridgeStatus");
+            RhinoApp.WriteLine("[UrbanBridge] Open UI: UrbanBridgeRoadNetwork | UrbanBridgeZones | UrbanBridgeDashboard");
             return LoadReturnCode.Success;
         }
         catch (Exception exception)
