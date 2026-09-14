@@ -100,7 +100,7 @@ public sealed class RoadNetworkContent : Panel
                 HorizontalContentAlignment = HorizontalAlignment.Stretch,
                 Items =
                 {
-                    new Label { Text = "Road Network", Font = new Eto.Drawing.Font(SystemFont.Bold, 12) },
+                    new Label { Text = "Road Network" },
                     _totalLengthLabel,
                     _intersectionsLabel,
                     _deadEndsLabel,
