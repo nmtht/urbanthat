@@ -72,7 +72,8 @@ public sealed class RoadNetworkForm : Form
 
         var form = new RoadNetworkForm();
         _openInstance = form;
-        form.Owner = Rhino.UI.RhinoEtoApp.MainWindow;
+        // Namespace is UrbanBridge.Rhino — must qualify Rhino.UI via global::
+        form.Owner = global::Rhino.UI.RhinoEtoApp.MainWindow;
         form.SubscribeAndRebuild();
         form.Show();
     }
