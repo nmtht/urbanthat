@@ -1,17 +1,22 @@
+using System.Runtime.InteropServices;
 using Rhino;
 using Rhino.Commands;
-using Rhino.UI;
 
 namespace UrbanBridge.Rhino;
 
 /// <summary>Shows the bridge state and how to open the Road Network panel.</summary>
+[Guid("A9B8C7D6-E5F4-4A3B-9C2D-1E0F9A8B7C6D")]
 public sealed class UrbanBridgeStatusCommand : Command
 {
     public override string EnglishName => "UrbanBridgeStatus";
 
     protected override Result RunCommand(RhinoDoc doc, RunMode mode)
     {
-        var server = UrbanBridgePlugin.Instance?.Server;
+        var plugin = UrbanBridgePlugin.Instance;
+        var server = plugin?.Server;
+
+        RhinoApp.WriteLine($"[UrbanBridge] PlugIn.Id = {plugin?.Id}");
+
         if (server is null || !server.IsRunning)
         {
             RhinoApp.WriteLine("[UrbanBridge] The bridge is not running.");
