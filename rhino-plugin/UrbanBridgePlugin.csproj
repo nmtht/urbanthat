@@ -7,23 +7,14 @@
     <LangVersion>latest</LangVersion>
     <AssemblyName>UrbanBridgePlugin</AssemblyName>
     <RootNamespace>UrbanBridge.Rhino</RootNamespace>
-    <!-- Keep our AssemblyInfo.cs (do not strip the assembly Guid Rhino needs). -->
+    <!-- Keep Properties/AssemblyInfo.cs so the assembly Guid is present for Rhino PlugIn.Id -->
     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- RhinoCommon is supplied by Rhino itself. No third-party runtime DLLs are required. -->
     <PackageReference Include="RhinoCommon" Version="8.*" PrivateAssets="all" />
   </ItemGroup>
 
-  <!-- Explicit assembly Guid (same as AssemblyInfo) for toolchains that ignore Properties/AssemblyInfo.cs -->
-  <ItemGroup>
-    <AssemblyAttribute Include="System.Runtime.InteropServices.GuidAttribute">
-      <_Parameter1>E8C3A1F2-4B7D-4E9A-8C1F-3D6E9B0A2C5D</_Parameter1>
-    </AssemblyAttribute>
-  </ItemGroup>
-
-  <!-- A single .rhp is ready for direct installation through Rhino's PlugInManager. -->
   <Target Name="PreparePluginBundle" AfterTargets="Build">
     <PropertyGroup>
       <PluginBundleDir>$(TargetDir)package/$(AssemblyName)</PluginBundleDir>
