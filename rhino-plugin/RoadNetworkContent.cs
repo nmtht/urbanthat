@@ -3,9 +3,7 @@ using Rhino;
 
 namespace UrbanBridge.Rhino;
 
-/// <summary>
-/// Shared UI: stats, issues, attribute editor, and Generate Road Surfaces.
-/// </summary>
+/// <summary>Roads tab: stats, issues, attributes, Generate Road Surfaces.</summary>
 public sealed class RoadNetworkContent : Panel
 {
     private readonly Label _totalLengthLabel = new() { Text = "Total length: —" };
@@ -36,12 +34,15 @@ public sealed class RoadNetworkContent : Panel
     private readonly Label _generateStatusLabel = new() { Text = "" };
 
     private BridgeServer? _server;
+    private readonly object _uiGate = new();
+    private System.Threading.Timer? _uiTimer;
+    private RoadNetworkGraph? _pendingGraph;
 
     public RoadNetworkContent()
     {
         foreach (var c in RoadAttributeHelper.RoadClasses)
             _classDropDown.Items.Add(c);
-        _classDropDown.SelectedIndex = 2; // local
+        _classDropDown.SelectedIndex = 2;
 
         _classDropDown.SelectedIndexChanged += (_, _) => OnClassChanged();
 
@@ -159,6 +160,7 @@ public sealed class RoadNetworkContent : Panel
         if (_server is not null)
             _server.RoadNetworkUpdated -= OnRoadNetworkUpdated;
         _server = null;
+        UiInvoke.DisposeTimer(ref _uiTimer, _uiGate);
     }
 
     public void RebuildGraph()
@@ -167,13 +169,19 @@ public sealed class RoadNetworkContent : Panel
         {
             if (RhinoDoc.ActiveDoc is { } doc && UrbanBridgePlugin.Instance?.Server is { } server)
                 server.RebuildAndSendRoadNetwork(doc);
-            else if (_server?.LatestRoadNetwork is { } graph)
-                OnRoadNetworkUpdated(graph);
+            else
+                PaintFromCache();
         }
         catch (Exception ex)
         {
             RhinoApp.WriteLine($"[UrbanBridge] Rebuild error: {ex.Message}");
         }
+    }
+
+    public void PaintFromCache()
+    {
+        if (_server?.LatestRoadNetwork is { } graph)
+            ApplyUi(graph);
     }
 
     public void RefreshSelectionLabel()
@@ -202,7 +210,6 @@ public sealed class RoadNetworkContent : Panel
             if (graph is null || graph.Edges.Count == 0)
             {
                 _generateStatusLabel.Text = "No road edges — add curves on Roads first.";
-                RhinoApp.WriteLine("[UrbanBridge] Generate Road Surfaces: empty graph.");
                 return;
             }
 
@@ -214,12 +221,11 @@ public sealed class RoadNetworkContent : Panel
             {
                 server.MarkRoadSurfaceGenerated();
                 server.NotifyRoadNetworkUpdated(graph);
-                // Refresh zone road-access against new surfaces
                 server.RebuildZoneAnalysis(doc);
             }
             else
             {
-                OnRoadNetworkUpdated(graph);
+                ApplyUi(graph);
             }
 
             _generateStatusLabel.Text =
@@ -227,10 +233,6 @@ public sealed class RoadNetworkContent : Panel
                 (result.FailedLinks + result.FailedHubs > 0
                     ? $", failed links={result.FailedLinks} hubs={result.FailedHubs}"
                     : "");
-
-            RhinoApp.WriteLine(
-                $"[UrbanBridge] Road surfaces: deleted={result.DeletedCount}, created={result.CreatedCount}, " +
-                $"failed links={result.FailedLinks}, hubs={result.FailedHubs}");
         }
         catch (Exception ex)
         {
@@ -269,7 +271,7 @@ public sealed class RoadNetworkContent : Panel
         }
 
         var n = RoadAttributeHelper.InitAsRoad(doc, curves, SelectedClass());
-        RhinoApp.WriteLine($"[UrbanBridge] Init as road: {n} curve(s) → layer Roads + default UserText.");
+        RhinoApp.WriteLine($"[UrbanBridge] Init as road: {n} curve(s).");
         RebuildGraph();
         ReadSelection();
     }
@@ -299,7 +301,7 @@ public sealed class RoadNetworkContent : Panel
 
         var terminal = _terminalCheck.Checked == true;
         var n = RoadAttributeHelper.ApplyAttributes(doc, curves, cls, lanes, width, terminal);
-        RhinoApp.WriteLine($"[UrbanBridge] Applied attributes to {n} curve(s): class={cls}, lanes={lanes}, width={width}, terminal={terminal}.");
+        RhinoApp.WriteLine($"[UrbanBridge] Applied attributes to {n} curve(s).");
         RebuildGraph();
     }
 
@@ -324,53 +326,49 @@ public sealed class RoadNetworkContent : Panel
 
     private void OnRoadNetworkUpdated(RoadNetworkGraph graph)
     {
-        void Apply()
+        _pendingGraph = graph;
+        UiInvoke.Coalesce(ref _uiTimer, _uiGate, () =>
         {
-            _totalLengthLabel.Text = $"Total length: {graph.Stats.TotalLengthM:F1} m";
-            _intersectionsLabel.Text = $"Intersections: {graph.Stats.IntersectionCount}";
-            _deadEndsLabel.Text = $"Dead ends: {graph.Stats.DeadEndCount}";
-            _componentsLabel.Text = $"Components: {graph.Stats.ComponentCount}";
+            var g = _pendingGraph;
+            if (g is not null)
+                ApplyUi(g);
+        });
+    }
 
-            if (graph.Stats.LengthByClass.Count > 0)
-            {
-                var parts = graph.Stats.LengthByClass
-                    .OrderBy(kv => kv.Key)
-                    .Select(kv => $"{kv.Key}: {kv.Value:F1} m");
-                _byClassLabel.Text = "By class: " + string.Join(", ", parts);
-            }
-            else
-            {
-                _byClassLabel.Text = "By class: —";
-            }
+    private void ApplyUi(RoadNetworkGraph graph)
+    {
+        _totalLengthLabel.Text = $"Total length: {graph.Stats.TotalLengthM:F1} m";
+        _intersectionsLabel.Text = $"Intersections: {graph.Stats.IntersectionCount}";
+        _deadEndsLabel.Text = $"Dead ends: {graph.Stats.DeadEndCount}";
+        _componentsLabel.Text = $"Components: {graph.Stats.ComponentCount}";
 
-            if (graph.Issues.Count == 0)
-            {
-                _issuesText.Text = graph.Edges.Count == 0
-                    ? "No edges.\nCreate layer 'Roads', draw curves, then Init as road."
-                    : "No issues.";
-            }
-            else
-            {
-                var lines = graph.Issues
-                    .OrderByDescending(i => i.Severity)
-                    .ThenBy(i => i.Type)
-                    .Select(i => $"[{i.Severity}] {i.Type}: {i.Message}");
-                _issuesText.Text = string.Join("\n", lines);
-            }
-
-            RefreshSelectionLabel();
+        if (graph.Stats.LengthByClass.Count > 0)
+        {
+            var parts = graph.Stats.LengthByClass
+                .OrderBy(kv => kv.Key)
+                .Select(kv => $"{kv.Key}: {kv.Value:F1} m");
+            _byClassLabel.Text = "By class: " + string.Join(", ", parts);
+        }
+        else
+        {
+            _byClassLabel.Text = "By class: —";
         }
 
-        try
+        if (graph.Issues.Count == 0)
         {
-            if (Application.Instance != null)
-                Application.Instance.AsyncInvoke(Apply);
-            else
-                Apply();
+            _issuesText.Text = graph.Edges.Count == 0
+                ? "No edges.\nCreate layer 'Roads', draw curves, then Init as road."
+                : "No issues.";
         }
-        catch
+        else
         {
-            Apply();
+            var lines = graph.Issues
+                .OrderByDescending(i => i.Severity)
+                .ThenBy(i => i.Type)
+                .Select(i => $"[{i.Severity}] {i.Type}: {i.Message}");
+            _issuesText.Text = UiInvoke.FormatCappedLines(lines);
         }
+
+        RefreshSelectionLabel();
     }
 }

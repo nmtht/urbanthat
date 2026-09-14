@@ -3,9 +3,7 @@ using Rhino;
 
 namespace UrbanBridge.Rhino;
 
-/// <summary>
-/// Single modeless window for the whole plugin (Roads / Zoning / Dashboard tabs).
-/// </summary>
+/// <summary>Single modeless window (Roads / Zoning / Dashboard tabs).</summary>
 public sealed class RoadNetworkForm : Form
 {
     private static RoadNetworkForm? _openInstance;
@@ -34,7 +32,7 @@ public sealed class RoadNetworkForm : Form
         {
             _openInstance.BringToFront();
             _openInstance._content.SelectTab(tabIndex);
-            _openInstance._content.RefreshAll();
+            _openInstance._content.RefreshActiveTab(fromCacheOnly: true);
             return;
         }
 
@@ -43,7 +41,8 @@ public sealed class RoadNetworkForm : Form
         form.Owner = global::Rhino.UI.RhinoEtoApp.MainWindow;
         form._content.AttachServer(UrbanBridgePlugin.Instance?.Server);
         form._content.SelectTab(tabIndex);
-        form._content.RefreshAll();
+        // Prefer cache; rebuild only if the active tab has no data yet
+        form._content.RefreshActiveTab(fromCacheOnly: true);
         form.Show();
     }
 }

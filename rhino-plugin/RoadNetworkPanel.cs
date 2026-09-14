@@ -24,7 +24,7 @@ public class RoadNetworkPanel : Panel, IPanel
             return;
 
         _content.AttachServer(UrbanBridgePlugin.Instance?.Server);
-        _content.RefreshAll();
+        _content.RefreshActiveTab(fromCacheOnly: true);
     }
 
     public void PanelHidden(uint documentSerialNumber, ShowPanelReason reason)

@@ -5,6 +5,7 @@ namespace UrbanBridge.Rhino;
 
 /// <summary>
 /// Single plugin UI: tabs Roads | Zoning | Dashboard.
+/// Only the active tab is refreshed from heavy analysis; others use cached snapshots.
 /// </summary>
 public sealed class UrbanBridgeMainContent : Panel
 {
@@ -19,8 +20,11 @@ public sealed class UrbanBridgeMainContent : Panel
         _tabs.Pages.Add(new TabPage { Text = "Roads", Content = _roads });
         _tabs.Pages.Add(new TabPage { Text = "Zoning", Content = _zones });
         _tabs.Pages.Add(new TabPage { Text = "Dashboard", Content = _dashboard });
+        _tabs.SelectedIndexChanged += (_, _) => RefreshActiveTab(fromCacheOnly: true);
         Content = _tabs;
     }
+
+    public int SelectedTabIndex => _tabs.SelectedIndex;
 
     public void AttachServer(BridgeServer? server)
     {
@@ -36,12 +40,29 @@ public sealed class UrbanBridgeMainContent : Panel
         _dashboard.DetachServer();
     }
 
-    public void RefreshAll()
+    /// <summary>Light open path: paint from cache, rebuild only the active tab if cache empty.</summary>
+    public void RefreshActiveTab(bool fromCacheOnly = false)
     {
-        _roads.RebuildGraph();
-        _roads.RefreshSelectionLabel();
-        _zones.Rebuild();
-        _dashboard.Rebuild();
+        switch (_tabs.SelectedIndex)
+        {
+            case 0:
+                if (!fromCacheOnly || UrbanBridgePlugin.Instance?.Server?.LatestRoadNetwork is null)
+                    _roads.RebuildGraph();
+                else
+                    _roads.PaintFromCache();
+                _roads.RefreshSelectionLabel();
+                break;
+            case 1:
+                if (!fromCacheOnly || UrbanBridgePlugin.Instance?.Server?.LatestZoneAnalysis is null)
+                    _zones.Rebuild();
+                else
+                    _zones.PaintFromCache();
+                break;
+            case 2:
+                // Dashboard never forces a full dual rebuild — only paints Latest*
+                _dashboard.PaintFromCache();
+                break;
+        }
     }
 
     public void SelectTab(int index)
@@ -67,6 +88,9 @@ public sealed class ZoneTabContent : Panel
     private readonly TextBox _greenBox = new() { Text = "0.25", Width = 80 };
 
     private BridgeServer? _server;
+    private readonly object _uiGate = new();
+    private System.Threading.Timer? _uiTimer;
+    private ZoneAnalysis? _pending;
 
     public ZoneTabContent()
     {
@@ -163,6 +187,7 @@ public sealed class ZoneTabContent : Panel
         if (_server is not null)
             _server.ZoneAnalysisUpdated -= OnUpdated;
         _server = null;
+        UiInvoke.DisposeTimer(ref _uiTimer, _uiGate);
     }
 
     public void Rebuild()
@@ -171,14 +196,21 @@ public sealed class ZoneTabContent : Panel
         {
             if (RhinoDoc.ActiveDoc is { } doc && UrbanBridgePlugin.Instance?.Server is { } server)
                 server.RebuildZoneAnalysis(doc);
-            else if (_server?.LatestZoneAnalysis is { } a)
-                OnUpdated(a);
+            else
+                PaintFromCache();
             RefreshSelectionLabel();
         }
         catch (Exception ex)
         {
             RhinoApp.WriteLine($"[UrbanBridge] Zone tab rebuild: {ex.Message}");
         }
+    }
+
+    public void PaintFromCache()
+    {
+        if (_server?.LatestZoneAnalysis is { } a)
+            ApplyUi(a);
+        RefreshSelectionLabel();
     }
 
     private void RefreshSelectionLabel()
@@ -267,44 +299,55 @@ public sealed class ZoneTabContent : Panel
 
     private void OnUpdated(ZoneAnalysis analysis)
     {
-        void Apply()
+        _pending = analysis;
+        UiInvoke.Coalesce(ref _uiTimer, _uiGate, () =>
         {
-            _summaryLabel.Text =
-                $"Zones: {analysis.Zones.Count} · area {analysis.TotalAreaSqm:F0} m² · " +
-                $"pop {analysis.TotalPopulation:F0} · jobs {analysis.TotalJobs:F0}";
+            var data = _pending;
+            if (data is not null)
+                ApplyUi(data);
+        });
+    }
 
-            if (analysis.RoadSurfacesStale)
-                _staleLabel.Text = "⚠ Road surfaces may be outdated — re-run Generate Road Surfaces.";
-            else if (analysis.LastRoadSurfaceGenUtc is null)
-                _staleLabel.Text = "Road surfaces not generated yet (needed for zone_no_road_access).";
-            else
-                _staleLabel.Text = "";
+    private void ApplyUi(ZoneAnalysis analysis)
+    {
+        _summaryLabel.Text =
+            $"Zones: {analysis.Zones.Count} · area {analysis.TotalAreaSqm:F0} m² · " +
+            $"pop {analysis.TotalPopulation:F0} · jobs {analysis.TotalJobs:F0}";
 
-            if (analysis.Zones.Count == 0)
-                _zonesText.Text = "No closed curves on Zones. Select curves → Init as zone.";
-            else
+        if (analysis.RoadSurfacesStale)
+            _staleLabel.Text = "⚠ Road surfaces may be outdated — re-run Generate Road Surfaces.";
+        else if (analysis.LastRoadSurfaceGenUtc is null)
+            _staleLabel.Text = "Road surfaces not generated yet (needed for zone_no_road_access).";
+        else
+            _staleLabel.Text = "";
+
+        if (analysis.Zones.Count == 0)
+        {
+            _zonesText.Text = "No closed curves on Zones. Select curves → Init as zone.";
+        }
+        else
+        {
+            var lines = analysis.Zones.Select(z =>
             {
-                _zonesText.Text = string.Join("\n", analysis.Zones.Select(z =>
-                {
-                    analysis.MetricsById.TryGetValue(z.RhinoObjectId, out var m);
-                    return $"{z.ZoneType,-12} {(m?.AreaSqm ?? 0),8:F0} m²  build {(m?.BuildableAreaSqm ?? 0),8:F0}  pop {(m?.EstimatedPopulation ?? 0),6:F0}  front {(m?.RoadFrontageM ?? 0),5:F0} m";
-                }));
-            }
-
-            _issuesText.Text = analysis.Issues.Count == 0
-                ? "No issues."
-                : string.Join("\n", analysis.Issues.OrderByDescending(i => i.Severity)
-                    .Select(i => $"[{i.Severity}] {i.Type}: {i.Message}"));
-
-            RefreshSelectionLabel();
+                analysis.MetricsById.TryGetValue(z.RhinoObjectId, out var m);
+                return $"{z.ZoneType,-12} {(m?.AreaSqm ?? 0),8:F0} m²  build {(m?.BuildableAreaSqm ?? 0),8:F0}  pop {(m?.EstimatedPopulation ?? 0),6:F0}  front {(m?.RoadFrontageM ?? 0),5:F0} m";
+            });
+            _zonesText.Text = UiInvoke.FormatCappedLines(lines, 50);
         }
 
-        try
+        if (analysis.Issues.Count == 0)
         {
-            if (Application.Instance != null) Application.Instance.AsyncInvoke(Apply);
-            else Apply();
+            _issuesText.Text = "No issues.";
         }
-        catch { Apply(); }
+        else
+        {
+            var lines = analysis.Issues
+                .OrderByDescending(i => i.Severity)
+                .Select(i => $"[{i.Severity}] {i.Type}: {i.Message}");
+            _issuesText.Text = UiInvoke.FormatCappedLines(lines);
+        }
+
+        RefreshSelectionLabel();
     }
 
     private static double ParseBox(TextBox box, double fallback) =>
@@ -315,7 +358,7 @@ public sealed class ZoneTabContent : Panel
         v.ToString(System.Globalization.CultureInfo.InvariantCulture);
 }
 
-/// <summary>Dashboard tab embedded in the main panel.</summary>
+/// <summary>Dashboard tab — paints from cached Latest* only (no forced dual rebuild).</summary>
 public sealed class DashboardTabContent : Panel
 {
     private readonly Label _popLabel = new() { Text = "Population: —" };
@@ -327,11 +370,13 @@ public sealed class DashboardTabContent : Panel
     private readonly TextArea _roadStats = new() { ReadOnly = true, Wrap = true, Height = 80 };
 
     private BridgeServer? _server;
+    private readonly object _uiGate = new();
+    private System.Threading.Timer? _uiTimer;
 
     public DashboardTabContent()
     {
-        var refresh = new Button { Text = "Refresh" };
-        refresh.Click += (_, _) => Rebuild();
+        var refresh = new Button { Text = "Refresh (recompute)" };
+        refresh.Click += (_, _) => ForceRecompute();
 
         Content = new Scrollable
         {
@@ -371,6 +416,7 @@ public sealed class DashboardTabContent : Panel
         {
             _server.ZoneAnalysisUpdated += OnZone;
             _server.RoadNetworkUpdated += OnRoad;
+            PaintFromCache();
         }
     }
 
@@ -382,9 +428,13 @@ public sealed class DashboardTabContent : Panel
             _server.RoadNetworkUpdated -= OnRoad;
         }
         _server = null;
+        UiInvoke.DisposeTimer(ref _uiTimer, _uiGate);
     }
 
-    public void Rebuild()
+    public void PaintFromCache() =>
+        Apply(_server?.LatestZoneAnalysis, _server?.LatestRoadNetwork);
+
+    private void ForceRecompute()
     {
         try
         {
@@ -393,67 +443,62 @@ public sealed class DashboardTabContent : Panel
                 server.RebuildAndSendRoadNetwork(doc);
                 server.RebuildZoneAnalysis(doc);
             }
-            Apply(_server?.LatestZoneAnalysis, _server?.LatestRoadNetwork);
+            PaintFromCache();
         }
         catch (Exception ex)
         {
-            RhinoApp.WriteLine($"[UrbanBridge] Dashboard rebuild: {ex.Message}");
+            RhinoApp.WriteLine($"[UrbanBridge] Dashboard recompute: {ex.Message}");
         }
     }
 
-    private void OnZone(ZoneAnalysis a) => Apply(a, _server?.LatestRoadNetwork);
-    private void OnRoad(RoadNetworkGraph g) => Apply(_server?.LatestZoneAnalysis, g);
+    private void OnZone(ZoneAnalysis a) => ScheduleApply(a, _server?.LatestRoadNetwork);
+    private void OnRoad(RoadNetworkGraph g) => ScheduleApply(_server?.LatestZoneAnalysis, g);
+
+    private void ScheduleApply(ZoneAnalysis? zones, RoadNetworkGraph? roads)
+    {
+        UiInvoke.Coalesce(ref _uiTimer, _uiGate, () => Apply(zones, roads));
+    }
 
     private void Apply(ZoneAnalysis? zones, RoadNetworkGraph? roads)
     {
-        void Ui()
+        if (zones is null)
         {
-            if (zones is null)
-            {
-                _popLabel.Text = "Population: —";
-                _jobsLabel.Text = "Jobs: —";
-                _greenLabel.Text = "Green: —";
-                _areaByType.Text = "No zone data.";
-            }
-            else
-            {
-                _popLabel.Text = $"Population (est.): {zones.TotalPopulation:F0}";
-                _jobsLabel.Text = $"Jobs (est.): {zones.TotalJobs:F0}";
-                var greenPct = zones.TotalAreaSqm > 0 ? 100.0 * zones.TotalGreenAreaSqm / zones.TotalAreaSqm : 0;
-                _greenLabel.Text = $"Green area: {zones.TotalGreenAreaSqm:F0} m² ({greenPct:F1}% of zones)";
-                _areaByType.Text = zones.AreaByType.Count == 0
-                    ? "—"
-                    : string.Join("\n", zones.AreaByType.OrderBy(kv => kv.Key)
-                        .Select(kv => $"{kv.Key,-12} {kv.Value,10:F0} m²"));
-                _staleLabel.Text = zones.RoadSurfacesStale
-                    ? "⚠ Road surfaces outdated relative to centerline edits."
-                    : "";
-            }
-
-            if (roads is null)
-            {
-                _roadStats.Text = "No road graph.";
-                _roadDensityLabel.Text = "Road density: —";
-            }
-            else
-            {
-                _roadStats.Text =
-                    $"Length: {roads.Stats.TotalLengthM:F1} m\n" +
-                    $"Intersections: {roads.Stats.IntersectionCount} · Dead ends: {roads.Stats.DeadEndCount}\n" +
-                    $"Components: {roads.Stats.ComponentCount}";
-                var zoneKm2 = (zones?.TotalAreaSqm ?? 0) / 1_000_000.0;
-                var roadKm = roads.Stats.TotalLengthM / 1000.0;
-                _roadDensityLabel.Text = zoneKm2 > 1e-9
-                    ? $"Road density: {roadKm / zoneKm2:F2} km/km²"
-                    : "Road density: — (no zone area)";
-            }
+            _popLabel.Text = "Population: —";
+            _jobsLabel.Text = "Jobs: —";
+            _greenLabel.Text = "Green: —";
+            _areaByType.Text = "No zone data.";
+        }
+        else
+        {
+            _popLabel.Text = $"Population (est.): {zones.TotalPopulation:F0}";
+            _jobsLabel.Text = $"Jobs (est.): {zones.TotalJobs:F0}";
+            var greenPct = zones.TotalAreaSqm > 0 ? 100.0 * zones.TotalGreenAreaSqm / zones.TotalAreaSqm : 0;
+            _greenLabel.Text = $"Green area: {zones.TotalGreenAreaSqm:F0} m² ({greenPct:F1}% of zones)";
+            _areaByType.Text = zones.AreaByType.Count == 0
+                ? "—"
+                : string.Join("\n", zones.AreaByType.OrderBy(kv => kv.Key)
+                    .Select(kv => $"{kv.Key,-12} {kv.Value,10:F0} m²"));
+            _staleLabel.Text = zones.RoadSurfacesStale
+                ? "⚠ Road surfaces outdated relative to centerline edits."
+                : "";
         }
 
-        try
+        if (roads is null)
         {
-            if (Application.Instance != null) Application.Instance.AsyncInvoke(Ui);
-            else Ui();
+            _roadStats.Text = "No road graph.";
+            _roadDensityLabel.Text = "Road density: —";
         }
-        catch { Ui(); }
+        else
+        {
+            _roadStats.Text =
+                $"Length: {roads.Stats.TotalLengthM:F1} m\n" +
+                $"Intersections: {roads.Stats.IntersectionCount} · Dead ends: {roads.Stats.DeadEndCount}\n" +
+                $"Components: {roads.Stats.ComponentCount}";
+            var zoneKm2 = (zones?.TotalAreaSqm ?? 0) / 1_000_000.0;
+            var roadKm = roads.Stats.TotalLengthM / 1000.0;
+            _roadDensityLabel.Text = zoneKm2 > 1e-9
+                ? $"Road density: {roadKm / zoneKm2:F2} km/km²"
+                : "Road density: — (no zone area)";
+        }
     }
 }
