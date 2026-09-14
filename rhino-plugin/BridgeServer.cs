@@ -108,6 +108,17 @@ public sealed class BridgeServer : IDisposable
         }
     }
 
+    /// <summary>
+    /// Push an already-updated graph (e.g. after surface generation added extra issues)
+    /// to the panel and WebSocket clients without rebuilding topology.
+    /// </summary>
+    public void NotifyRoadNetworkUpdated(RoadNetworkGraph graph)
+    {
+        LatestRoadNetwork = graph;
+        RoadNetworkUpdated?.Invoke(graph);
+        _ = BroadcastAsync(SerializeRoadNetwork(graph));
+    }
+
     private static object SerializeRoadNetwork(RoadNetworkGraph graph)
     {
         var nodes = graph.Nodes.Select(n => new Dictionary<string, object?>
