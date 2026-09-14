@@ -34,37 +34,25 @@ public sealed class UrbanBridgePlugin : PlugIn
             RhinoApp.WriteLine($"[UrbanBridge] Type.GUID = {typeGuid}");
             RhinoApp.WriteLine($"[UrbanBridge] Assembly Guid = {asmGuid}");
 
-            // Always start the bridge — UI is secondary.
             _server = new BridgeServer();
             _server.Start();
             _documentEvents = new DocumentEventHandlers(_server);
             _documentEvents.Subscribe();
             RhinoApp.WriteLine("[UrbanBridge] Rhino bridge started at ws://localhost:7890.");
 
-            if (Id == System.Guid.Empty)
-            {
-                RhinoApp.WriteLine("[UrbanBridge] WARNING: PlugIn.Id is still Empty — dockable panel may fail.");
-                RhinoApp.WriteLine("[UrbanBridge] Use UrbanBridgeRoadNetwork for the floating window fallback.");
-            }
-            else
+            if (Id != System.Guid.Empty)
             {
                 try
                 {
-                    Panels.RegisterPanel(
-                        this,
-                        typeof(RoadNetworkPanel),
-                        "Road Network",
-                        icon: null,
-                        panelType: PanelType.PerDoc);
-                    RhinoApp.WriteLine($"[UrbanBridge] Road Network panel registered. PanelGuid={typeof(RoadNetworkPanel).GUID}");
+                    Panels.RegisterPanel(this, typeof(RoadNetworkPanel), "Road Network", null, PanelType.PerDoc);
                 }
                 catch (Exception ex)
                 {
-                    RhinoApp.WriteLine($"[UrbanBridge] RegisterPanel failed: {ex.Message}");
+                    RhinoApp.WriteLine($"[UrbanBridge] RegisterPanel Road Network: {ex.Message}");
                 }
             }
 
-            RhinoApp.WriteLine("[UrbanBridge] Open UI: UrbanBridgeRoadNetwork");
+            RhinoApp.WriteLine("[UrbanBridge] Commands: UrbanBridgeRoadNetwork | UrbanBridgeZones | UrbanBridgeDashboard | UrbanBridgeStatus");
             return LoadReturnCode.Success;
         }
         catch (Exception exception)
