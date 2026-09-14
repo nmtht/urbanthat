@@ -4,8 +4,7 @@ using Rhino;
 namespace UrbanBridge.Rhino;
 
 /// <summary>
-/// Shared UI: stats, issues, and road-attribute editor for selected curves.
-/// Used by both the dockable panel and the floating form.
+/// Shared UI: stats, issues, attribute editor, and Generate Road Surfaces.
 /// </summary>
 public sealed class RoadNetworkContent : Panel
 {
@@ -34,6 +33,7 @@ public sealed class RoadNetworkContent : Panel
     };
     private readonly TextBox _widthBox = new() { Text = "8", Width = 80 };
     private readonly CheckBox _terminalCheck = new() { Text = "is_terminal (intentional dead-end)", Checked = false };
+    private readonly Label _generateStatusLabel = new() { Text = "" };
 
     private BridgeServer? _server;
 
@@ -56,6 +56,9 @@ public sealed class RoadNetworkContent : Panel
 
         var refreshButton = new Button { Text = "Refresh graph / Обновить" };
         refreshButton.Click += (_, _) => RebuildGraph();
+
+        var generateButton = new Button { Text = "Generate Road Surfaces" };
+        generateButton.Click += (_, _) => GenerateSurfaces();
 
         var attrGroup = new GroupBox
         {
@@ -90,6 +93,26 @@ public sealed class RoadNetworkContent : Panel
             },
         };
 
+        var surfaceGroup = new GroupBox
+        {
+            Text = "Road surfaces (Stage 2.1)",
+            Content = new StackLayout
+            {
+                Padding = 6,
+                Spacing = 4,
+                HorizontalContentAlignment = HorizontalAlignment.Stretch,
+                Items =
+                {
+                    generateButton,
+                    _generateStatusLabel,
+                    new Label
+                    {
+                        Text = "Manual only — deletes previous generated objects, builds roadway / sidewalk / lane lines.",
+                    },
+                },
+            },
+        };
+
         Content = new Scrollable
         {
             Border = BorderType.None,
@@ -109,6 +132,7 @@ public sealed class RoadNetworkContent : Panel
                     new Label { Text = "Issues" },
                     _issuesText,
                     attrGroup,
+                    surfaceGroup,
                     refreshButton,
                 },
             },
@@ -157,6 +181,62 @@ public sealed class RoadNetworkContent : Panel
         var doc = RhinoDoc.ActiveDoc;
         var n = doc is null ? 0 : RoadAttributeHelper.GetSelectedCurves(doc).Count;
         _selectionLabel.Text = $"Selected curves: {n}";
+    }
+
+    private void GenerateSurfaces()
+    {
+        var doc = RhinoDoc.ActiveDoc;
+        if (doc is null)
+        {
+            _generateStatusLabel.Text = "No active document.";
+            return;
+        }
+
+        try
+        {
+            // Ensure graph is current
+            var server = UrbanBridgePlugin.Instance?.Server;
+            if (server is not null)
+                server.RebuildAndSendRoadNetwork(doc);
+
+            var graph = server?.LatestRoadNetwork;
+            if (graph is null || graph.Edges.Count == 0)
+            {
+                _generateStatusLabel.Text = "No road edges — add curves on Roads first.";
+                RhinoApp.WriteLine("[UrbanBridge] Generate Road Surfaces: empty graph.");
+                return;
+            }
+
+            _generateStatusLabel.Text = "Generating…";
+            var generator = new RoadSurfaceGenerator(doc);
+            var result = generator.Generate(doc, graph);
+
+            // Push updated issues (acute / generation_failed) to panel + clients
+            if (server is not null)
+            {
+                // Re-broadcast graph with extra issues without full rebuild of topology
+                server.NotifyRoadNetworkUpdated(graph);
+            }
+            else
+            {
+                OnRoadNetworkUpdated(graph);
+            }
+
+            _generateStatusLabel.Text =
+                $"Done: deleted {result.DeletedCount}, created {result.CreatedCount}" +
+                (result.FailedLinks + result.FailedHubs > 0
+                    ? $", failed links={result.FailedLinks} hubs={result.FailedHubs}"
+                    : "");
+
+            RhinoApp.WriteLine(
+                $"[UrbanBridge] Road surfaces: deleted={result.DeletedCount}, created={result.CreatedCount}, " +
+                $"failed links={result.FailedLinks}, hubs={result.FailedHubs}");
+        }
+        catch (Exception ex)
+        {
+            _generateStatusLabel.Text = "Error: " + ex.Message;
+            RhinoApp.WriteLine($"[UrbanBridge] Generate Road Surfaces failed: {ex.Message}");
+        }
     }
 
     private void OnClassChanged()
