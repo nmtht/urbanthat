@@ -28,6 +28,7 @@ public sealed class RoadNetworkValidator
         }
 
         CheckMissingAttributes(graph, objectById);
+        CheckMedianFit(graph, objectById);
         CheckDegenerateSegments(graph, objectById, scale);
         CheckSelfIntersections(graph, objectById, scale);
         CheckDanglingEnds(graph, objectById);
@@ -35,7 +36,6 @@ public sealed class RoadNetworkValidator
         CheckDuplicateOverlap(graph, objectById, scale);
         CheckCrossingWithoutNode(graph, objectById, scale);
 
-        // Refresh stats that depend on final graph
         graph.Stats.IntersectionCount = graph.Nodes.Count(n => n.Type == NodeType.Intersection);
         graph.Stats.DeadEndCount = graph.Nodes.Count(n => n.Type == NodeType.DeadEnd);
     }
@@ -53,6 +53,59 @@ public sealed class RoadNetworkValidator
                     Type = "missing_attributes",
                     Severity = IssueSeverity.Info,
                     Message = "road_class not set; defaulting to local",
+                    RelatedEdgeIds = new List<Guid> { edge.RhinoObjectId },
+                });
+            }
+        }
+    }
+
+    /// <summary>
+    /// Warning when median does not fit: median_width_m + 2 × lane_width ≳ width_m.
+    /// lane_width ≈ width_m / max(lanes, 1) when lanes &gt; 0; otherwise skip.
+    /// </summary>
+    private void CheckMedianFit(RoadNetworkGraph graph, Dictionary<Guid, RhinoObject> objectById)
+    {
+        foreach (var edge in graph.Edges)
+        {
+            if (!objectById.TryGetValue(edge.RhinoObjectId, out var obj)) continue;
+            var strings = obj.Attributes.GetUserStrings();
+
+            if (!TryParseDouble(strings.Get("median_width_m"), out var median) || median <= 0)
+                continue;
+
+            var width = edge.WidthMeters;
+            if (width <= 0) continue;
+
+            var lanes = edge.Lanes > 0 ? edge.Lanes : 1;
+            // Assume each lane needs at least width/lanes of clear roadway; median sits in the middle.
+            // Required clear roadway ≈ 2 × (width - median) / 2 is tautological; instead:
+            // remaining for lanes = width - median; each lane share = remaining / lanes.
+            // Flag if remaining is less than a reasonable minimum per lane (2.5 m) × lanes,
+            // or simply: median + 2 * (width/lanes) > width  ⇒  median > width * (1 - 2/lanes) for lanes>=2
+            // User-facing rule: median_width_m + 2 × lane_width > width_m where lane_width = width/lanes.
+            var laneWidth = width / lanes;
+            if (median + 2.0 * laneWidth > width + 1e-6)
+            {
+                graph.Issues.Add(new NetworkIssue
+                {
+                    Type = "median_overflow",
+                    Severity = IssueSeverity.Warning,
+                    Message =
+                        $"median_width_m ({median:F1}) + 2×lane ({laneWidth:F1}) = {median + 2 * laneWidth:F1} m " +
+                        $"> width_m ({width:F1}) — reduce median or increase width",
+                    RelatedEdgeIds = new List<Guid> { edge.RhinoObjectId },
+                });
+            }
+            else if (width - median < lanes * 2.5)
+            {
+                // Soft check: remaining carriageway thinner than 2.5 m per lane
+                graph.Issues.Add(new NetworkIssue
+                {
+                    Type = "median_overflow",
+                    Severity = IssueSeverity.Warning,
+                    Message =
+                        $"After median {median:F1} m, remaining {width - median:F1} m for {lanes} lane(s) " +
+                        $"(< 2.5 m/lane)",
                     RelatedEdgeIds = new List<Guid> { edge.RhinoObjectId },
                 });
             }
@@ -83,7 +136,7 @@ public sealed class RoadNetworkValidator
 
     private void CheckSelfIntersections(RoadNetworkGraph graph, Dictionary<Guid, RhinoObject> objectById, double scale)
     {
-        var tol = _snapTolerance / scale; // document units
+        var tol = _snapTolerance / scale;
         foreach (var edge in graph.Edges)
         {
             if (!objectById.TryGetValue(edge.RhinoObjectId, out var obj) || obj.Geometry is not Curve curve)
@@ -107,7 +160,6 @@ public sealed class RoadNetworkValidator
     {
         foreach (var node in graph.Nodes.Where(n => n.Degree == 1))
         {
-            // Find the single connected edge and check is_terminal
             var edgeId = node.ConnectedEdgeIds.FirstOrDefault();
             if (edgeId == Guid.Empty) continue;
             if (!objectById.TryGetValue(edgeId, out var obj)) continue;
@@ -144,7 +196,6 @@ public sealed class RoadNetworkValidator
 
     private void CheckDuplicateOverlap(RoadNetworkGraph graph, Dictionary<Guid, RhinoObject> objectById, double scale)
     {
-        // Heuristic: midpoints and both endpoints of two curves within SnapTolerance
         var mids = new List<(Guid Id, Point3d Mid, Point3d Start, Point3d End)>();
         foreach (var edge in graph.Edges)
         {
@@ -175,7 +226,7 @@ public sealed class RoadNetworkValidator
                     {
                         Type = "duplicate_overlap",
                         Severity = IssueSeverity.Warning,
-                        Message = "Possible duplicate/overlapping curves (heuristic — false positives possible)",
+                        Message = "Possible duplicate/overlapping curves",
                         RelatedEdgeIds = new List<Guid> { a.Id, b.Id },
                     });
                 }
@@ -198,7 +249,6 @@ public sealed class RoadNetworkValidator
                 if (!objectById.TryGetValue(edges[j].RhinoObjectId, out var objB) || objB.Geometry is not Curve curveB)
                     continue;
 
-                // Skip if they already share a node (connected by design)
                 var shareNode =
                     edges[i].StartNodeId == edges[j].StartNodeId ||
                     edges[i].StartNodeId == edges[j].EndNodeId ||
@@ -209,7 +259,6 @@ public sealed class RoadNetworkValidator
                 var intersections = Intersection.CurveCurve(curveA, curveB, tolDoc, tolDoc);
                 if (intersections is null || intersections.Count == 0) continue;
 
-                // Any intersection that is not near an endpoint of both curves is a crossing without node
                 var hasInterior = false;
                 foreach (var ev in intersections)
                 {
@@ -241,4 +290,8 @@ public sealed class RoadNetworkValidator
             }
         }
     }
+
+    private static bool TryParseDouble(string? s, out double v) =>
+        double.TryParse(s, System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture, out v);
 }

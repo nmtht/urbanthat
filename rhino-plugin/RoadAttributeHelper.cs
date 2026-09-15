@@ -4,7 +4,7 @@ using Rhino.Geometry;
 
 namespace UrbanBridge.Rhino;
 
-/// <summary>Read / write road UserText on selected curves.</summary>
+/// <summary>Read / write road UserText + street presets.</summary>
 public static class RoadAttributeHelper
 {
     public static readonly string[] RoadClasses =
@@ -24,6 +24,18 @@ public static class RoadAttributeHelper
             ["bike"] = (0, 2, 2.0),
         };
 
+    /// <summary>Named presets: one click sets class + radius + median + greenery + parking + direction.</summary>
+    public static readonly Dictionary<string, RoadPreset> Presets =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["magistral"] = new("primary", 4, 18, false, "two_way", 8, 2.0, 1.0, 2.5),
+            ["residential"] = new("local", 2, 8, false, "two_way", 4, 0, 0.8, 2.0),
+            ["courtyard"] = new("local", 1, 5, true, "one_way", 3, 0, 0.5, 0),
+            ["shared"] = new("pedestrian", 0, 4, false, "two_way", 2, 0, 0, 0),
+        };
+
+    public static readonly string[] PresetNames = { "magistral", "residential", "courtyard", "shared" };
+
     public const string KeyClass = "road_class";
     public const string KeyLanes = "lanes";
     public const string KeyWidth = "width_m";
@@ -32,6 +44,18 @@ public static class RoadAttributeHelper
     public const string KeyCornerRadius = "corner_radius_m";
     public const string KeyMedian = "median_width_m";
     public const string KeySidewalkGreen = "sidewalk_green_m";
+    public const string KeyParking = "parking_width_m";
+
+    public readonly record struct RoadPreset(
+        string Class,
+        int Lanes,
+        double WidthM,
+        bool Terminal,
+        string Direction,
+        double CornerRadiusM,
+        double MedianM,
+        double SidewalkGreenM,
+        double ParkingM);
 
     public static List<RhinoObject> GetSelectedCurves(RhinoDoc doc)
     {
@@ -77,6 +101,8 @@ public static class RoadAttributeHelper
                 attrs.SetUserString(KeyMedian, "0");
             if (string.IsNullOrWhiteSpace(strings.Get(KeySidewalkGreen)))
                 attrs.SetUserString(KeySidewalkGreen, "0");
+            if (string.IsNullOrWhiteSpace(strings.Get(KeyParking)))
+                attrs.SetUserString(KeyParking, "0");
 
             if (doc.Objects.ModifyAttributes(obj, attrs, true))
                 count++;
@@ -96,7 +122,8 @@ public static class RoadAttributeHelper
         string direction,
         double cornerRadiusM,
         double medianWidthM,
-        double sidewalkGreenM)
+        double sidewalkGreenM,
+        double parkingWidthM)
     {
         if (doc is null || curves.Count == 0) return 0;
         if (!ClassDefaults.ContainsKey(roadClass))
@@ -116,6 +143,7 @@ public static class RoadAttributeHelper
             attrs.SetUserString(KeyCornerRadius, Format(Math.Max(0, cornerRadiusM)));
             attrs.SetUserString(KeyMedian, Format(Math.Max(0, medianWidthM)));
             attrs.SetUserString(KeySidewalkGreen, Format(Math.Max(0, sidewalkGreenM)));
+            attrs.SetUserString(KeyParking, Format(Math.Max(0, parkingWidthM)));
 
             if (doc.Objects.ModifyAttributes(obj, attrs, true))
                 count++;
@@ -123,6 +151,15 @@ public static class RoadAttributeHelper
 
         if (count > 0) doc.Views.Redraw();
         return count;
+    }
+
+    public static int ApplyPreset(RhinoDoc doc, IReadOnlyList<RhinoObject> curves, string presetName)
+    {
+        if (!Presets.TryGetValue(presetName, out var p))
+            return 0;
+        return ApplyAttributes(
+            doc, curves, p.Class, p.Lanes, p.WidthM, p.Terminal,
+            p.Direction, p.CornerRadiusM, p.MedianM, p.SidewalkGreenM, p.ParkingM);
     }
 
     public static (
@@ -133,7 +170,8 @@ public static class RoadAttributeHelper
         string Direction,
         double CornerRadius,
         double Median,
-        double SidewalkGreen)? ReadFirst(IReadOnlyList<RhinoObject> curves)
+        double SidewalkGreen,
+        double Parking)? ReadFirst(IReadOnlyList<RhinoObject> curves)
     {
         if (curves.Count == 0) return null;
         var strings = curves[0].Attributes.GetUserStrings();
@@ -162,7 +200,8 @@ public static class RoadAttributeHelper
             dir,
             Parse(KeyCornerRadius, defaults.CornerRadiusM),
             Parse(KeyMedian, 0),
-            Parse(KeySidewalkGreen, 0));
+            Parse(KeySidewalkGreen, 0),
+            Parse(KeyParking, 0));
     }
 
     public static double DefaultCornerRadiusM(string roadClass)
