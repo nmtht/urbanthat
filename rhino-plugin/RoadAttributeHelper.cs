@@ -4,10 +4,7 @@ using Rhino.Geometry;
 
 namespace UrbanBridge.Rhino;
 
-/// <summary>
-/// Read / write road User Text on selected curve objects.
-/// Keys match TZ §2: road_class, lanes, width_m, is_terminal.
-/// </summary>
+/// <summary>Read / write road UserText on selected curves.</summary>
 public static class RoadAttributeHelper
 {
     public static readonly string[] RoadClasses =
@@ -15,22 +12,28 @@ public static class RoadAttributeHelper
         "primary", "secondary", "local", "pedestrian", "bike",
     };
 
-    public static readonly Dictionary<string, (int Lanes, double WidthM)> ClassDefaults =
+    public static readonly string[] Directions = { "two_way", "one_way" };
+
+    /// <summary>lanes, width_m, corner_radius_m defaults by class.</summary>
+    public static readonly Dictionary<string, (int Lanes, double WidthM, double CornerRadiusM)> ClassDefaults =
         new(StringComparer.OrdinalIgnoreCase)
         {
-            ["primary"] = (4, 18),
-            ["secondary"] = (2, 12),
-            ["local"] = (2, 8),
-            ["pedestrian"] = (0, 3),
-            ["bike"] = (0, 2),
+            ["primary"] = (4, 18, 8.0),
+            ["secondary"] = (2, 12, 6.0),
+            ["local"] = (2, 8, 4.0),
+            ["pedestrian"] = (0, 3, 2.0),
+            ["bike"] = (0, 2, 2.0),
         };
 
     public const string KeyClass = "road_class";
     public const string KeyLanes = "lanes";
     public const string KeyWidth = "width_m";
     public const string KeyTerminal = "is_terminal";
+    public const string KeyDirection = "direction"; // two_way | one_way
+    public const string KeyCornerRadius = "corner_radius_m";
+    public const string KeyMedian = "median_width_m";
+    public const string KeySidewalkGreen = "sidewalk_green_m";
 
-    /// <summary>Selected curve objects in the active document (non-deleted).</summary>
     public static List<RhinoObject> GetSelectedCurves(RhinoDoc doc)
     {
         var list = new List<RhinoObject>();
@@ -44,18 +47,12 @@ public static class RoadAttributeHelper
         return list;
     }
 
-    /// <summary>
-    /// Ensure layer <c>Roads</c> exists and move objects onto it, then set default
-    /// User Text if keys are missing. Returns number of curves processed.
-    /// </summary>
     public static int InitAsRoad(RhinoDoc doc, IReadOnlyList<RhinoObject> curves, string roadClass = "local")
     {
         if (doc is null || curves.Count == 0) return 0;
-
         if (!ClassDefaults.ContainsKey(roadClass))
             roadClass = "local";
-        var (defLanes, defWidth) = ClassDefaults[roadClass];
-
+        var (defLanes, defWidth, defRadius) = ClassDefaults[roadClass];
         var layerIndex = EnsureRoadsLayer(doc);
         var count = 0;
 
@@ -63,39 +60,42 @@ public static class RoadAttributeHelper
         {
             var attrs = obj.Attributes.Duplicate();
             attrs.LayerIndex = layerIndex;
-
             var strings = attrs.GetUserStrings();
-            if (string.IsNullOrWhiteSpace(strings.Get(KeyClass)))
-                attrs.SetUserString(KeyClass, roadClass);
-            if (string.IsNullOrWhiteSpace(strings.Get(KeyLanes)))
-                attrs.SetUserString(KeyLanes, defLanes.ToString(System.Globalization.CultureInfo.InvariantCulture));
-            if (string.IsNullOrWhiteSpace(strings.Get(KeyWidth)))
-                attrs.SetUserString(KeyWidth, defWidth.ToString(System.Globalization.CultureInfo.InvariantCulture));
-            if (string.IsNullOrWhiteSpace(strings.Get(KeyTerminal)))
-                attrs.SetUserString(KeyTerminal, "false");
+
+            SetIfEmpty(attrs, strings, KeyClass, roadClass);
+            SetIfEmpty(attrs, strings, KeyLanes, defLanes.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            SetIfEmpty(attrs, strings, KeyWidth, Format(defWidth));
+            SetIfEmpty(attrs, strings, KeyTerminal, "false");
+            SetIfEmpty(attrs, strings, KeyDirection, "two_way");
+            SetIfEmpty(attrs, strings, KeyCornerRadius, Format(defRadius));
+            SetIfEmpty(attrs, strings, KeyMedian, "0");
+            SetIfEmpty(attrs, strings, KeySidewalkGreen, "0");
 
             if (doc.Objects.ModifyAttributes(obj, attrs, true))
                 count++;
         }
 
-        if (count > 0)
-            doc.Views.Redraw();
+        if (count > 0) doc.Views.Redraw();
         return count;
     }
 
-    /// <summary>Write the given attribute values onto all selected curves.</summary>
     public static int ApplyAttributes(
         RhinoDoc doc,
         IReadOnlyList<RhinoObject> curves,
         string roadClass,
         int lanes,
         double widthM,
-        bool isTerminal)
+        bool isTerminal,
+        string direction,
+        double cornerRadiusM,
+        double medianWidthM,
+        double sidewalkGreenM)
     {
         if (doc is null || curves.Count == 0) return 0;
-
         if (!ClassDefaults.ContainsKey(roadClass))
             roadClass = "local";
+        if (!string.Equals(direction, "one_way", StringComparison.OrdinalIgnoreCase))
+            direction = "two_way";
 
         var count = 0;
         foreach (var obj in curves)
@@ -103,23 +103,30 @@ public static class RoadAttributeHelper
             var attrs = obj.Attributes.Duplicate();
             attrs.SetUserString(KeyClass, roadClass);
             attrs.SetUserString(KeyLanes, lanes.ToString(System.Globalization.CultureInfo.InvariantCulture));
-            attrs.SetUserString(KeyWidth, widthM.ToString("G", System.Globalization.CultureInfo.InvariantCulture));
+            attrs.SetUserString(KeyWidth, Format(widthM));
             attrs.SetUserString(KeyTerminal, isTerminal ? "true" : "false");
+            attrs.SetUserString(KeyDirection, direction);
+            attrs.SetUserString(KeyCornerRadius, Format(Math.Max(0, cornerRadiusM)));
+            attrs.SetUserString(KeyMedian, Format(Math.Max(0, medianWidthM)));
+            attrs.SetUserString(KeySidewalkGreen, Format(Math.Max(0, sidewalkGreenM)));
 
             if (doc.Objects.ModifyAttributes(obj, attrs, true))
                 count++;
         }
 
-        if (count > 0)
-            doc.Views.Redraw();
+        if (count > 0) doc.Views.Redraw();
         return count;
     }
 
-    /// <summary>
-    /// Read attributes from the first selected curve (for UI display).
-    /// Returns null if nothing selected.
-    /// </summary>
-    public static (string Class, int Lanes, double Width, bool Terminal)? ReadFirst(IReadOnlyList<RhinoObject> curves)
+    public static (
+        string Class,
+        int Lanes,
+        double Width,
+        bool Terminal,
+        string Direction,
+        double CornerRadius,
+        double Median,
+        double SidewalkGreen)? ReadFirst(IReadOnlyList<RhinoObject> curves)
     {
         if (curves.Count == 0) return null;
         var strings = curves[0].Attributes.GetUserStrings();
@@ -127,14 +134,35 @@ public static class RoadAttributeHelper
         if (string.IsNullOrWhiteSpace(cls) || !ClassDefaults.ContainsKey(cls))
             cls = "local";
         var defaults = ClassDefaults[cls];
+
+        double Parse(string key, double fallback)
+        {
+            var s = strings.Get(key);
+            return double.TryParse(s, System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out var v) ? v : fallback;
+        }
+
         var lanes = int.TryParse(strings.Get(KeyLanes), out var l) ? l : defaults.Lanes;
-        var width = double.TryParse(
-            strings.Get(KeyWidth),
-            System.Globalization.NumberStyles.Float,
-            System.Globalization.CultureInfo.InvariantCulture,
-            out var w) ? w : defaults.WidthM;
-        var terminal = string.Equals(strings.Get(KeyTerminal), "true", StringComparison.OrdinalIgnoreCase);
-        return (cls, lanes, width, terminal);
+        var dir = strings.Get(KeyDirection);
+        if (!string.Equals(dir, "one_way", StringComparison.OrdinalIgnoreCase))
+            dir = "two_way";
+
+        return (
+            cls,
+            lanes,
+            Parse(KeyWidth, defaults.WidthM),
+            string.Equals(strings.Get(KeyTerminal), "true", StringComparison.OrdinalIgnoreCase),
+            dir,
+            Parse(KeyCornerRadius, defaults.CornerRadiusM),
+            Parse(KeyMedian, 0),
+            Parse(KeySidewalkGreen, 0));
+    }
+
+    public static double DefaultCornerRadiusM(string roadClass)
+    {
+        if (ClassDefaults.TryGetValue(roadClass, out var d))
+            return d.CornerRadiusM;
+        return 4.0;
     }
 
     public static int EnsureRoadsLayer(RhinoDoc doc)
@@ -155,4 +183,13 @@ public static class RoadAttributeHelper
         var index = doc.Layers.Add(newLayer);
         return index >= 0 ? index : 0;
     }
+
+    private static void SetIfEmpty(ObjectAttributes attrs, NameValueCollection strings, string key, string value)
+    {
+        if (string.IsNullOrWhiteSpace(strings.Get(key)))
+            attrs.SetUserString(key, value);
+    }
+
+    private static string Format(double v) =>
+        v.ToString("G", System.Globalization.CultureInfo.InvariantCulture);
 }
