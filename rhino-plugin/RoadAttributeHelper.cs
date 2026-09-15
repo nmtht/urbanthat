@@ -14,7 +14,6 @@ public static class RoadAttributeHelper
 
     public static readonly string[] Directions = { "two_way", "one_way" };
 
-    /// <summary>lanes, width_m, corner_radius_m defaults by class.</summary>
     public static readonly Dictionary<string, (int Lanes, double WidthM, double CornerRadiusM)> ClassDefaults =
         new(StringComparer.OrdinalIgnoreCase)
         {
@@ -29,7 +28,7 @@ public static class RoadAttributeHelper
     public const string KeyLanes = "lanes";
     public const string KeyWidth = "width_m";
     public const string KeyTerminal = "is_terminal";
-    public const string KeyDirection = "direction"; // two_way | one_way
+    public const string KeyDirection = "direction";
     public const string KeyCornerRadius = "corner_radius_m";
     public const string KeyMedian = "median_width_m";
     public const string KeySidewalkGreen = "sidewalk_green_m";
@@ -62,14 +61,22 @@ public static class RoadAttributeHelper
             attrs.LayerIndex = layerIndex;
             var strings = attrs.GetUserStrings();
 
-            SetIfEmpty(attrs, strings, KeyClass, roadClass);
-            SetIfEmpty(attrs, strings, KeyLanes, defLanes.ToString(System.Globalization.CultureInfo.InvariantCulture));
-            SetIfEmpty(attrs, strings, KeyWidth, Format(defWidth));
-            SetIfEmpty(attrs, strings, KeyTerminal, "false");
-            SetIfEmpty(attrs, strings, KeyDirection, "two_way");
-            SetIfEmpty(attrs, strings, KeyCornerRadius, Format(defRadius));
-            SetIfEmpty(attrs, strings, KeyMedian, "0");
-            SetIfEmpty(attrs, strings, KeySidewalkGreen, "0");
+            if (string.IsNullOrWhiteSpace(strings.Get(KeyClass)))
+                attrs.SetUserString(KeyClass, roadClass);
+            if (string.IsNullOrWhiteSpace(strings.Get(KeyLanes)))
+                attrs.SetUserString(KeyLanes, defLanes.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            if (string.IsNullOrWhiteSpace(strings.Get(KeyWidth)))
+                attrs.SetUserString(KeyWidth, Format(defWidth));
+            if (string.IsNullOrWhiteSpace(strings.Get(KeyTerminal)))
+                attrs.SetUserString(KeyTerminal, "false");
+            if (string.IsNullOrWhiteSpace(strings.Get(KeyDirection)))
+                attrs.SetUserString(KeyDirection, "two_way");
+            if (string.IsNullOrWhiteSpace(strings.Get(KeyCornerRadius)))
+                attrs.SetUserString(KeyCornerRadius, Format(defRadius));
+            if (string.IsNullOrWhiteSpace(strings.Get(KeyMedian)))
+                attrs.SetUserString(KeyMedian, "0");
+            if (string.IsNullOrWhiteSpace(strings.Get(KeySidewalkGreen)))
+                attrs.SetUserString(KeySidewalkGreen, "0");
 
             if (doc.Objects.ModifyAttributes(obj, attrs, true))
                 count++;
@@ -182,12 +189,6 @@ public static class RoadAttributeHelper
         };
         var index = doc.Layers.Add(newLayer);
         return index >= 0 ? index : 0;
-    }
-
-    private static void SetIfEmpty(ObjectAttributes attrs, NameValueCollection strings, string key, string value)
-    {
-        if (string.IsNullOrWhiteSpace(strings.Get(key)))
-            attrs.SetUserString(key, value);
     }
 
     private static string Format(double v) =>
