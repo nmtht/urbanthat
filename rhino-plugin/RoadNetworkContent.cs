@@ -15,7 +15,7 @@ public sealed class RoadNetworkContent : Panel
     {
         ReadOnly = true,
         Wrap = true,
-        Height = 140,
+        Height = 120,
         Text = "No issues yet.\nAdd curves on layer Roads.",
     };
 
@@ -31,6 +31,10 @@ public sealed class RoadNetworkContent : Panel
     };
     private readonly TextBox _widthBox = new() { Text = "8", Width = 80 };
     private readonly CheckBox _terminalCheck = new() { Text = "is_terminal (intentional dead-end)", Checked = false };
+    private readonly DropDown _directionDrop = new();
+    private readonly TextBox _cornerRadiusBox = new() { Text = "4", Width = 80 };
+    private readonly TextBox _medianBox = new() { Text = "0", Width = 80 };
+    private readonly TextBox _sidewalkGreenBox = new() { Text = "0", Width = 80 };
     private readonly Label _generateStatusLabel = new() { Text = "" };
 
     private BridgeServer? _server;
@@ -43,6 +47,10 @@ public sealed class RoadNetworkContent : Panel
         foreach (var c in RoadAttributeHelper.RoadClasses)
             _classDropDown.Items.Add(c);
         _classDropDown.SelectedIndex = 2;
+
+        foreach (var d in RoadAttributeHelper.Directions)
+            _directionDrop.Items.Add(d);
+        _directionDrop.SelectedIndex = 0; // two_way
 
         _classDropDown.SelectedIndexChanged += (_, _) => OnClassChanged();
 
@@ -80,6 +88,10 @@ public sealed class RoadNetworkContent : Panel
                             new TableRow(new Label { Text = "road_class" }, _classDropDown),
                             new TableRow(new Label { Text = "lanes" }, _lanesStepper),
                             new TableRow(new Label { Text = "width_m" }, _widthBox),
+                            new TableRow(new Label { Text = "direction" }, _directionDrop),
+                            new TableRow(new Label { Text = "corner_radius_m" }, _cornerRadiusBox),
+                            new TableRow(new Label { Text = "median_width_m" }, _medianBox),
+                            new TableRow(new Label { Text = "sidewalk_green_m" }, _sidewalkGreenBox),
                         },
                     },
                     _terminalCheck,
@@ -96,7 +108,7 @@ public sealed class RoadNetworkContent : Panel
 
         var surfaceGroup = new GroupBox
         {
-            Text = "Road surfaces (Stage 2.1)",
+            Text = "Road surfaces",
             Content = new StackLayout
             {
                 Padding = 6,
@@ -108,7 +120,7 @@ public sealed class RoadNetworkContent : Panel
                     _generateStatusLabel,
                     new Label
                     {
-                        Text = "Manual only — deletes previous generated objects, builds roadway / sidewalk / lane lines.",
+                        Text = "Rebuilds roadway / sidewalk / greenery with class-based corner fillets. Median & sidewalk green from attributes.",
                     },
                 },
             },
@@ -248,6 +260,7 @@ public sealed class RoadNetworkContent : Panel
         {
             _lanesStepper.Value = d.Lanes;
             _widthBox.Text = d.WidthM.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            _cornerRadiusBox.Text = d.CornerRadiusM.ToString(System.Globalization.CultureInfo.InvariantCulture);
         }
     }
 
@@ -256,6 +269,13 @@ public sealed class RoadNetworkContent : Panel
         if (_classDropDown.SelectedIndex >= 0 && _classDropDown.SelectedIndex < RoadAttributeHelper.RoadClasses.Length)
             return RoadAttributeHelper.RoadClasses[_classDropDown.SelectedIndex];
         return "local";
+    }
+
+    private string SelectedDirection()
+    {
+        if (_directionDrop.SelectedIndex >= 0 && _directionDrop.SelectedIndex < RoadAttributeHelper.Directions.Length)
+            return RoadAttributeHelper.Directions[_directionDrop.SelectedIndex];
+        return "two_way";
     }
 
     private void InitSelected()
@@ -290,18 +310,17 @@ public sealed class RoadNetworkContent : Panel
 
         var cls = SelectedClass();
         var lanes = (int)_lanesStepper.Value;
-        if (!double.TryParse(
-                _widthBox.Text,
-                System.Globalization.NumberStyles.Float,
-                System.Globalization.CultureInfo.InvariantCulture,
-                out var width))
-        {
-            width = RoadAttributeHelper.ClassDefaults[cls].WidthM;
-        }
-
+        var width = ParseBox(_widthBox, RoadAttributeHelper.ClassDefaults[cls].WidthM);
         var terminal = _terminalCheck.Checked == true;
-        var n = RoadAttributeHelper.ApplyAttributes(doc, curves, cls, lanes, width, terminal);
-        RhinoApp.WriteLine($"[UrbanBridge] Applied attributes to {n} curve(s).");
+        var direction = SelectedDirection();
+        var radius = ParseBox(_cornerRadiusBox, RoadAttributeHelper.ClassDefaults[cls].CornerRadiusM);
+        var median = ParseBox(_medianBox, 0);
+        var swGreen = ParseBox(_sidewalkGreenBox, 0);
+
+        var n = RoadAttributeHelper.ApplyAttributes(
+            doc, curves, cls, lanes, width, terminal, direction, radius, median, swGreen);
+        RhinoApp.WriteLine(
+            $"[UrbanBridge] Applied to {n}: class={cls}, dir={direction}, r={radius}, median={median}, sw_green={swGreen}");
         RebuildGraph();
     }
 
@@ -314,7 +333,7 @@ public sealed class RoadNetworkContent : Panel
         var data = RoadAttributeHelper.ReadFirst(curves);
         if (data is null) return;
 
-        var (cls, lanes, width, terminal) = data.Value;
+        var (cls, lanes, width, terminal, direction, radius, median, swGreen) = data.Value;
         var idx = Array.FindIndex(RoadAttributeHelper.RoadClasses, c =>
             c.Equals(cls, StringComparison.OrdinalIgnoreCase));
         if (idx >= 0)
@@ -322,6 +341,15 @@ public sealed class RoadNetworkContent : Panel
         _lanesStepper.Value = lanes;
         _widthBox.Text = width.ToString(System.Globalization.CultureInfo.InvariantCulture);
         _terminalCheck.Checked = terminal;
+
+        var dIdx = Array.FindIndex(RoadAttributeHelper.Directions, d =>
+            d.Equals(direction, StringComparison.OrdinalIgnoreCase));
+        if (dIdx >= 0)
+            _directionDrop.SelectedIndex = dIdx;
+
+        _cornerRadiusBox.Text = radius.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        _medianBox.Text = median.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        _sidewalkGreenBox.Text = swGreen.ToString(System.Globalization.CultureInfo.InvariantCulture);
     }
 
     private void OnRoadNetworkUpdated(RoadNetworkGraph graph)
@@ -371,4 +399,8 @@ public sealed class RoadNetworkContent : Panel
 
         RefreshSelectionLabel();
     }
+
+    private static double ParseBox(TextBox box, double fallback) =>
+        double.TryParse(box.Text, System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture, out var v) ? v : fallback;
 }
