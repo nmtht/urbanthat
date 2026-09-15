@@ -24,7 +24,6 @@ public static class RoadAttributeHelper
             ["bike"] = (0, 2, 2.0),
         };
 
-    /// <summary>Named presets: one click sets class + radius + median + greenery + parking + direction.</summary>
     public static readonly Dictionary<string, RoadPreset> Presets =
         new(StringComparer.OrdinalIgnoreCase)
         {
@@ -178,7 +177,7 @@ public static class RoadAttributeHelper
         var cls = strings.Get(KeyClass);
         if (string.IsNullOrWhiteSpace(cls) || !ClassDefaults.ContainsKey(cls))
             cls = "local";
-        var defaults = ClassDefaults[cls];
+        var defaults = ClassDefaults[cls!];
 
         double Parse(string key, double fallback)
         {
@@ -188,12 +187,13 @@ public static class RoadAttributeHelper
         }
 
         var lanes = int.TryParse(strings.Get(KeyLanes), out var l) ? l : defaults.Lanes;
-        var dir = strings.Get(KeyDirection);
-        if (!string.Equals(dir, "one_way", StringComparison.OrdinalIgnoreCase))
-            dir = "two_way";
+        var dirRaw = strings.Get(KeyDirection);
+        string dir = string.Equals(dirRaw, "one_way", StringComparison.OrdinalIgnoreCase)
+            ? "one_way"
+            : "two_way";
 
         return (
-            cls,
+            cls!,
             lanes,
             Parse(KeyWidth, defaults.WidthM),
             string.Equals(strings.Get(KeyTerminal), "true", StringComparison.OrdinalIgnoreCase),
