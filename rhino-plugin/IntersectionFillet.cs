@@ -3,213 +3,217 @@ using Rhino.Geometry;
 namespace UrbanBridge.Rhino;
 
 /// <summary>
-/// Intersection fillets: only CONVEX corners (street outer corners).
-/// Concave re-entrant corners at link/hub junctions are left sharp —
-/// filleting them produced the inverted "bite" shapes.
+/// Street-corner fillets: arc between outer curb lines of two consecutive roads.
+/// Not a boolean-ring fillet (that produced inverted blobs).
 /// </summary>
 public static class IntersectionFillet
 {
-    public const double CollinearDegrees = 10.0;
-    public const double MinCornerDegrees = 20.0;
-    public const double MaxCornerDegrees = 150.0;
-
-    public static Curve? FilletExteriorCorners(Curve closed, double radius, double tolerance)
+    /// <summary>
+    /// One leg at a hub: outbound direction, half-width to outer curb, preferred radius.
+    /// </summary>
+    public readonly struct HubLeg
     {
-        if (closed is null || !closed.IsValid || radius <= tolerance * 2)
-            return null;
+        public Vector3d Outbound { get; init; }
+        public double OuterHalf { get; init; }
+        public double RoadHalf { get; init; }
+        public double Radius { get; init; }
+        public double ExtLength { get; init; }
+    }
 
-        if (!closed.IsClosed)
-            closed.MakeClosed(tolerance * 10);
-
-        if (!TryGetOpenPolyline(closed, tolerance, out var poly))
-            return null;
-
-        var n = poly.Count;
-        if (n < 3) return null;
-
-        // Shoelace: positive => CCW
-        double shoelace = 0;
-        for (var i = 0; i < n; i++)
-        {
-            var a = poly[i];
-            var b = poly[(i + 1) % n];
-            shoelace += a.X * b.Y - b.X * a.Y;
-        }
-        var isCcw = shoelace > 0;
-
-        // Precompute convex fillets at each vertex (or null)
-        var fillets = new (Point3d Start, Point3d End, ArcCurve Arc)?[n];
-        var any = false;
+    /// <summary>
+    /// Build fillet arcs between consecutive legs (must be sorted CCW by outbound angle).
+    /// Returns open arc curves for the outer curb corners.
+    /// </summary>
+    public static List<Curve> BuildPairwiseOuterArcs(
+        Point3d nodePt,
+        IReadOnlyList<HubLeg> legsCcw,
+        double tolerance)
+    {
+        var arcs = new List<Curve>();
+        var n = legsCcw.Count;
+        if (n < 2) return arcs;
 
         for (var i = 0; i < n; i++)
         {
-            var f = TryConvexFillet(
-                poly[(i - 1 + n) % n], poly[i], poly[(i + 1) % n],
-                radius, tolerance, isCcw);
-            if (f is not null)
+            var a = legsCcw[i];
+            var b = legsCcw[(i + 1) % n];
+
+            var dirA = a.Outbound;
+            var dirB = b.Outbound;
+            dirA.Z = 0; dirB.Z = 0;
+            if (!dirA.Unitize() || !dirB.Unitize()) continue;
+
+            // Left perpendicular of outbound (Z cross dir)
+            var leftA = Vector3d.CrossProduct(Vector3d.ZAxis, dirA);
+            var leftB = Vector3d.CrossProduct(Vector3d.ZAxis, dirB);
+            if (!leftA.Unitize() || !leftB.Unitize()) continue;
+            var rightA = -leftA;
+
+            // Outer curb of A (right side when going out) and outer curb of B (left side)
+            // — forms the exterior corner when legs are ordered CCW.
+            var outerA = Math.Max(a.OuterHalf, tolerance * 10);
+            var outerB = Math.Max(b.OuterHalf, tolerance * 10);
+
+            var originA = nodePt + rightA * outerA;
+            var originB = nodePt + leftB * outerB;
+
+            var lenA = Math.Max(a.ExtLength, outerA + a.Radius + tolerance * 10);
+            var lenB = Math.Max(b.ExtLength, outerB + b.Radius + tolerance * 10);
+
+            var lineA = new LineCurve(originA, originA + dirA * lenA);
+            var lineB = new LineCurve(originB, originB + dirB * lenB);
+
+            var radius = Math.Min(
+                a.Radius > 0 ? a.Radius : b.Radius,
+                b.Radius > 0 ? b.Radius : a.Radius);
+            if (radius <= tolerance * 2)
+                radius = Math.Max(a.Radius, b.Radius);
+            if (radius <= tolerance * 2) continue;
+
+            // Clamp by turn angle
+            var turn = Vector3d.VectorAngle(dirA, dirB);
+            // CCW angle from A to B may be the small or large gap — use directed
+            var cross = Vector3d.CrossProduct(dirA, dirB).Z;
+            var ccwTurn = Math.Atan2(cross, dirA * dirB);
+            if (ccwTurn < 0) ccwTurn += 2 * Math.PI;
+            radius = ClampRadius(radius, outerA, outerB, ccwTurn);
+            if (radius <= tolerance * 2) continue;
+
+            try
             {
-                fillets[i] = f;
-                any = true;
+                // Parameters near the node end of each curb line
+                var tA = lineA.Domain.Min + lineA.Domain.Length * 0.15;
+                var tB = lineB.Domain.Min + lineB.Domain.Length * 0.15;
+
+                var fillet = Curve.CreateFilletCurves(
+                    lineA, tA,
+                    lineB, tB,
+                    radius,
+                    join: false,
+                    trim: false,
+                    arcExtension: true,
+                    tolerance,
+                    tolerance);
+
+                if (fillet is null || fillet.Length == 0)
+                {
+                    // Try slightly further along the curbs
+                    tA = lineA.Domain.Min + lineA.Domain.Length * 0.35;
+                    tB = lineB.Domain.Min + lineB.Domain.Length * 0.35;
+                    fillet = Curve.CreateFilletCurves(
+                        lineA, tA, lineB, tB, radius,
+                        false, false, true, tolerance, tolerance);
+                }
+
+                if (fillet is null) continue;
+
+                foreach (var c in fillet)
+                {
+                    if (c is null || !c.IsValid) continue;
+                    // Keep arcs (fillet returns arc + sometimes trimmed lines)
+                    if (c is ArcCurve || c.GetLength() < lenA * 0.9)
+                    {
+                        // Prefer the arc piece: high curvature
+                        if (c.TryGetArc(out _) || c is ArcCurve)
+                            arcs.Add(c);
+                        else if (c.GetLength() > tolerance * 10 && c.GetLength() < (outerA + outerB + radius) * 3)
+                            arcs.Add(c);
+                    }
+                }
+            }
+            catch
+            {
+                // skip this corner
             }
         }
 
-        if (!any) return null;
+        return arcs;
+    }
 
-        // Walk loop: line to fillet start, arc, …
+    /// <summary>
+    /// Closed outer hub boundary: outer curb segments + pairwise fillet arcs.
+    /// </summary>
+    public static Curve? BuildHubOuterLoop(
+        Point3d nodePt,
+        IReadOnlyList<HubLeg> legsCcw,
+        double tolerance)
+    {
+        var n = legsCcw.Count;
+        if (n < 2) return null;
+
         var pieces = new List<Curve>();
+
         for (var i = 0; i < n; i++)
         {
-            var prev = (i - 1 + n) % n;
-            var from = fillets[prev] is { } pf ? pf.End : poly[prev];
-            var to = fillets[i] is { } cf ? cf.Start : poly[i];
+            var a = legsCcw[i];
+            var b = legsCcw[(i + 1) % n];
 
-            if (from.DistanceTo(to) > tolerance)
-                pieces.Add(new LineCurve(from, to));
+            var dirA = a.Outbound; dirA.Z = 0;
+            var dirB = b.Outbound; dirB.Z = 0;
+            if (!dirA.Unitize() || !dirB.Unitize()) continue;
 
-            if (fillets[i] is { } fillet)
-                pieces.Add(fillet.Arc);
+            var leftA = Vector3d.CrossProduct(Vector3d.ZAxis, dirA);
+            var leftB = Vector3d.CrossProduct(Vector3d.ZAxis, dirB);
+            if (!leftA.Unitize() || !leftB.Unitize()) continue;
+            var rightA = -leftA;
+
+            var outerA = Math.Max(a.OuterHalf, tolerance * 10);
+            var outerB = Math.Max(b.OuterHalf, tolerance * 10);
+            var originA = nodePt + rightA * outerA;
+            var originB = nodePt + leftB * outerB;
+            var lenA = Math.Max(a.ExtLength, outerA + a.Radius + 1);
+            var lenB = Math.Max(b.ExtLength, outerB + b.Radius + 1);
+
+            var lineA = new LineCurve(originA, originA + dirA * lenA);
+            var lineB = new LineCurve(originB, originB + dirB * lenB);
+
+            var radius = Math.Min(
+                a.Radius > 0 ? a.Radius : Math.Max(b.Radius, outerA),
+                b.Radius > 0 ? b.Radius : Math.Max(a.Radius, outerB));
+            var cross = Vector3d.CrossProduct(dirA, dirB).Z;
+            var ccwTurn = Math.Atan2(cross, dirA * dirB);
+            if (ccwTurn < 0) ccwTurn += 2 * Math.PI;
+            radius = ClampRadius(Math.Max(radius, tolerance * 10), outerA, outerB, ccwTurn);
+
+            Curve? arc = null;
+            try
+            {
+                var tA = lineA.Domain.ParameterAt(0.2);
+                var tB = lineB.Domain.ParameterAt(0.2);
+                var fillet = Curve.CreateFilletCurves(
+                    lineA, tA, lineB, tB, radius,
+                    join: true, trim: true, arcExtension: true,
+                    tolerance, tolerance);
+
+                if (fillet is not null && fillet.Length > 0)
+                {
+                    // With join=true may return single polycurve
+                    foreach (var c in fillet)
+                    {
+                        if (c is not null && c.IsValid)
+                            pieces.Add(c);
+                    }
+                    continue;
+                }
+            }
+            catch { }
+
+            // Fallback: straight connection between curb origins (no arc)
+            pieces.Add(new LineCurve(originA, originA + dirA * lenA * 0.5));
+            pieces.Add(new LineCurve(originA + dirA * lenA * 0.5, originB + dirB * lenB * 0.5));
+            pieces.Add(new LineCurve(originB + dirB * lenB * 0.5, originB));
         }
 
-        pieces = pieces.Where(c => c.IsValid && c.GetLength() > tolerance).ToList();
         if (pieces.Count == 0) return null;
 
-        var joined = Curve.JoinCurves(pieces, tolerance * 10);
+        var joined = Curve.JoinCurves(pieces, tolerance * 20);
         if (joined is null || joined.Length == 0) return null;
 
         var loop = joined.OrderByDescending(c => c.GetLength()).First();
         if (!loop.IsClosed)
-            loop.MakeClosed(tolerance * 10);
-
-        if (!IsReasonableFillet(closed, loop))
-            return null;
+            loop.MakeClosed(tolerance * 20);
 
         return loop.IsValid ? loop : null;
-    }
-
-    private static (Point3d Start, Point3d End, ArcCurve Arc)? TryConvexFillet(
-        Point3d pPrev, Point3d pCurr, Point3d pNext,
-        double radius, double tolerance, bool polyIsCcw)
-    {
-        var vIn = pCurr - pPrev;
-        var vOut = pNext - pCurr;
-        var lenIn = vIn.Length;
-        var lenOut = vOut.Length;
-        if (lenIn <= tolerance || lenOut <= tolerance || !vIn.Unitize() || !vOut.Unitize())
-            return null;
-
-        var deflect = Vector3d.VectorAngle(vIn, vOut);
-        var deg = deflect * (180.0 / Math.PI);
-        if (deg < MinCornerDegrees || deg > MaxCornerDegrees)
-            return null;
-
-        // Convex relative to winding: CCW poly → left turn; CW → right turn
-        var crossZ = vIn.X * vOut.Y - vIn.Y * vOut.X;
-        var isLeft = crossZ > 0;
-        if (polyIsCcw && !isLeft) return null;  // concave — skip (the inverted bites)
-        if (!polyIsCcw && isLeft) return null;
-
-        var tanHalf = Math.Tan(deflect * 0.5);
-        if (tanHalf < 1e-8) return null;
-
-        var r = radius;
-        var t = r * tanHalf;
-        var maxT = Math.Min(lenIn, lenOut) * 0.45;
-        if (t > maxT)
-        {
-            t = maxT;
-            r = t / Math.Max(tanHalf, 1e-8);
-        }
-
-        if (r <= tolerance * 2 || t <= tolerance)
-            return null;
-
-        var pStart = pCurr - vIn * t;
-        var pEnd = pCurr + vOut * t;
-        var midChord = (pStart + pEnd) * 0.5;
-
-        // Arc cuts the corner: midpoint lies toward interior of the turn (into angle)
-        var intoAngle = midChord - pCurr;
-        if (!intoAngle.Unitize()) return null;
-
-        var halfChord = pStart.DistanceTo(pEnd) * 0.5;
-        if (halfChord >= r - tolerance * 0.5) return null;
-
-        var sagitta = r - Math.Sqrt(Math.Max(0.0, r * r - halfChord * halfChord));
-        var pMid = midChord + intoAngle * sagitta;
-
-        // If we accidentally went the exterior way, flip
-        var pMidAlt = midChord - intoAngle * sagitta;
-        if (pCurr.DistanceTo(pMid) > pCurr.DistanceTo(pMidAlt))
-            pMid = pMidAlt;
-
-        try
-        {
-            var arc = new Arc(pStart, pMid, pEnd);
-            if (!arc.IsValid) return null;
-            return (pStart, pEnd, new ArcCurve(arc));
-        }
-        catch
-        {
-            return null;
-        }
-    }
-
-    private static bool TryGetOpenPolyline(Curve closed, double tolerance, out Polyline poly)
-    {
-        poly = null!;
-        if (closed.TryGetPolyline(out poly) && poly.Count >= 4)
-        {
-            // ok
-        }
-        else
-        {
-            var pl = closed.ToPolyline(
-                0, 0, 0.05, 0, 0, Math.Max(tolerance * 5, 0.01), 0, 0, true);
-            if (pl is null || !pl.TryGetPolyline(out poly) || poly.Count < 4)
-                return false;
-        }
-
-        while (poly.Count > 3 && poly[0].DistanceTo(poly[poly.Count - 1]) <= tolerance * 10)
-            poly.RemoveAt(poly.Count - 1);
-
-        // Drop collinear
-        var pts = new List<Point3d>();
-        var n = poly.Count;
-        for (var i = 0; i < n; i++)
-        {
-            var prev = poly[(i - 1 + n) % n];
-            var curr = poly[i];
-            var next = poly[(i + 1) % n];
-            var v0 = curr - prev;
-            var v1 = next - curr;
-            if (!v0.Unitize() || !v1.Unitize())
-            {
-                pts.Add(curr);
-                continue;
-            }
-            var deg = Vector3d.VectorAngle(v0, v1) * (180.0 / Math.PI);
-            if (deg >= CollinearDegrees)
-                pts.Add(curr);
-        }
-
-        if (pts.Count < 3) return false;
-        poly = new Polyline(pts);
-        return true;
-    }
-
-    private static bool IsReasonableFillet(Curve original, Curve filleted)
-    {
-        try
-        {
-            var a0 = AreaMassProperties.Compute(original);
-            var a1 = AreaMassProperties.Compute(filleted);
-            if (a0 is null || a1 is null) return true;
-            if (a1.Area <= 0) return false;
-            if (a1.Area > a0.Area * 1.1) return false;  // inverted → area grew
-            if (a1.Area < a0.Area * 0.4) return false;
-            return true;
-        }
-        catch { return true; }
     }
 
     public static double ClampRadius(
@@ -217,11 +221,13 @@ public static class IntersectionFillet
     {
         if (requested <= 0) return 0;
         var turn = Math.Abs(turnRadians);
-        if (turn < 1e-3 || turn > Math.PI - 1e-3) return 0;
+        if (turn < 1e-3) return 0;
+        // For nearly straight, no fillet; for very sharp, small r
+        if (turn > Math.PI * 1.9) return 0;
 
         var minHalf = Math.Max(Math.Min(halfWidthA, halfWidthB), 1e-6);
-        var byWidth = minHalf * 1.25;
-        var byAngle = minHalf / Math.Max(Math.Sin(turn * 0.5), 0.2);
+        var byWidth = minHalf * 2.0;
+        var byAngle = minHalf / Math.Max(Math.Sin(Math.Min(turn, Math.PI) * 0.5), 0.15);
         return Math.Min(requested, Math.Min(byWidth, byAngle));
     }
 
@@ -239,4 +245,7 @@ public static class IntersectionFillet
             .Select(t => t.item)
             .ToList();
     }
+
+    // Legacy no-op kept so older call sites compile if any remain
+    public static Curve? FilletExteriorCorners(Curve closed, double radius, double tolerance) => null;
 }
