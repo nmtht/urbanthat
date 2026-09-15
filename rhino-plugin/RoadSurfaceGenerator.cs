@@ -5,38 +5,51 @@ using Rhino.Geometry;
 namespace UrbanBridge.Rhino;
 
 /// <summary>
-/// Generate roadway / sidewalk / greenery surfaces and lane markings.
-/// Links and hubs built independently; corner fillets by road class radius.
+/// Road surfaces: links (sharp), hubs (external corner fillets only),
+/// greenery, parking, stop lines, crosswalks, one-way arrows.
 /// </summary>
 public sealed class RoadSurfaceGenerator
 {
     public const string LayerRoadway = "Roads::Surface::Roadway";
     public const string LayerSidewalk = "Roads::Surface::Sidewalk";
     public const string LayerGreenery = "Roads::Surface::Greenery";
+    public const string LayerParking = "Roads::Surface::Parking";
     public const string LayerMarkings = "Roads::Markings::LaneLine";
+    public const string LayerCrossing = "Roads::Markings::Crossing";
+    public const string LayerArrows = "Roads::Markings::Arrow";
 
     private const double AcuteAngleDegrees = 20.0;
     private const double ExtensionFactor = 1.5;
     private const double MaxExtensionFraction = 0.40;
+    private const double ArrowSpacingMeters = 18.0;
+    private const double ArrowLengthMeters = 3.0;
+    private const double ArrowHalfWidthMeters = 1.0;
+    private const double StopLineOffsetMeters = 1.5;
+    private const double CrosswalkDepthMeters = 3.0;
+    private const double CrosswalkStripeMeters = 0.5;
 
     private readonly double _docTolerance;
+    private readonly double _metersToDoc;
 
     public RoadSurfaceGenerator(RhinoDoc doc)
     {
         _docTolerance = doc.ModelAbsoluteTolerance > 0 ? doc.ModelAbsoluteTolerance : 0.001;
+        _metersToDoc = RhinoMath.UnitScale(UnitSystem.Meters, doc.ModelUnitSystem);
     }
 
     public GenerationResult Generate(RhinoDoc doc, RoadNetworkGraph graph)
     {
         var result = new GenerationResult();
-        var metersToDoc = RhinoMath.UnitScale(UnitSystem.Meters, doc.ModelUnitSystem);
 
         result.DeletedCount = RoadSurfaceCleanup.DeleteAllGenerated(doc);
 
         EnsureLayerPath(doc, LayerRoadway, System.Drawing.Color.FromArgb(90, 90, 95));
         EnsureLayerPath(doc, LayerSidewalk, System.Drawing.Color.FromArgb(180, 180, 175));
         EnsureLayerPath(doc, LayerGreenery, System.Drawing.Color.FromArgb(70, 140, 70));
+        EnsureLayerPath(doc, LayerParking, System.Drawing.Color.FromArgb(110, 110, 120));
         EnsureLayerPath(doc, LayerMarkings, System.Drawing.Color.FromArgb(240, 240, 220));
+        EnsureLayerPath(doc, LayerCrossing, System.Drawing.Color.FromArgb(250, 250, 250));
+        EnsureLayerPath(doc, LayerArrows, System.Drawing.Color.FromArgb(250, 250, 230));
 
         var edgeData = new Dictionary<Guid, EdgeGeom>();
         foreach (var edge in graph.Edges)
@@ -46,26 +59,20 @@ public sealed class RoadSurfaceGenerator
                 continue;
 
             var strings = obj.Attributes.GetUserStrings();
-            var widthDoc = edge.WidthMeters * metersToDoc;
-            var sidewalkDoc = GetSidewalkWidthM(obj, edge.RoadClass) * metersToDoc;
-            var radiusM = ParseAttr(strings, "corner_radius_m",
-                RoadAttributeHelper.DefaultCornerRadiusM(edge.RoadClass));
-            var medianM = ParseAttr(strings, "median_width_m", 0);
-            var sidewalkGreenM = ParseAttr(strings, "sidewalk_green_m", 0);
-            var oneWay = string.Equals(strings.Get("direction"), "one_way", StringComparison.OrdinalIgnoreCase);
-
             edgeData[edge.RhinoObjectId] = new EdgeGeom
             {
                 Edge = edge,
                 Curve = curve.DuplicateCurve(),
-                WidthDoc = widthDoc,
-                SidewalkDoc = sidewalkDoc,
+                WidthDoc = edge.WidthMeters * _metersToDoc,
+                SidewalkDoc = GetSidewalkWidthM(obj, edge.RoadClass) * _metersToDoc,
                 Lanes = edge.Lanes,
                 GenerateMarkings = GetGenerateMarkings(obj, edge.RoadClass),
-                CornerRadiusDoc = radiusM * metersToDoc,
-                MedianWidthDoc = medianM * metersToDoc,
-                SidewalkGreenDoc = sidewalkGreenM * metersToDoc,
-                OneWay = oneWay,
+                CornerRadiusDoc = ParseAttr(strings, "corner_radius_m",
+                    RoadAttributeHelper.DefaultCornerRadiusM(edge.RoadClass)) * _metersToDoc,
+                MedianWidthDoc = ParseAttr(strings, "median_width_m", 0) * _metersToDoc,
+                SidewalkGreenDoc = ParseAttr(strings, "sidewalk_green_m", 0) * _metersToDoc,
+                ParkingWidthDoc = ParseAttr(strings, "parking_width_m", 0) * _metersToDoc,
+                OneWay = string.Equals(strings.Get("direction"), "one_way", StringComparison.OrdinalIgnoreCase),
             };
         }
 
@@ -73,7 +80,7 @@ public sealed class RoadSurfaceGenerator
         var maxRadiusAtNode = new Dictionary<string, double>(StringComparer.Ordinal);
         foreach (var eg in edgeData.Values)
         {
-            var w = eg.WidthDoc + 2.0 * eg.SidewalkDoc;
+            var w = eg.WidthDoc + 2.0 * (eg.SidewalkDoc + eg.ParkingWidthDoc);
             maxWidthAtNode[eg.Edge.StartNodeId] = Math.Max(maxWidthAtNode.GetValueOrDefault(eg.Edge.StartNodeId), w);
             maxWidthAtNode[eg.Edge.EndNodeId] = Math.Max(maxWidthAtNode.GetValueOrDefault(eg.Edge.EndNodeId), w);
             maxRadiusAtNode[eg.Edge.StartNodeId] = Math.Max(maxRadiusAtNode.GetValueOrDefault(eg.Edge.StartNodeId), eg.CornerRadiusDoc);
@@ -102,10 +109,7 @@ public sealed class RoadSurfaceGenerator
 
         foreach (var eg in edgeData.Values)
         {
-            try
-            {
-                result.CreatedCount += BuildLink(doc, eg);
-            }
+            try { result.CreatedCount += BuildLink(doc, eg); }
             catch (Exception ex)
             {
                 graph.Issues.Add(new NetworkIssue
@@ -146,7 +150,7 @@ public sealed class RoadSurfaceGenerator
                 {
                     Type = "acute_angle_intersection",
                     Severity = IssueSeverity.Warning,
-                    Message = $"Node {node.Id} has edge angle < {AcuteAngleDegrees}° — hub geometry may self-intersect",
+                    Message = $"Node {node.Id} has edge angle < {AcuteAngleDegrees}°",
                     RelatedNodeId = node.Id,
                     RelatedEdgeIds = incident.Select(e => e.Edge.RhinoObjectId).ToList(),
                 });
@@ -156,6 +160,8 @@ public sealed class RoadSurfaceGenerator
             {
                 var hubRadius = maxRadiusAtNode.GetValueOrDefault(node.Id);
                 result.CreatedCount += BuildHub(doc, node, incident, hubRadius);
+                if (node.Type == NodeType.Intersection || node.Degree >= 3)
+                    result.CreatedCount += AddCrossingMarkings(doc, node, incident);
             }
             catch (Exception ex)
             {
@@ -175,6 +181,7 @@ public sealed class RoadSurfaceGenerator
         return result;
     }
 
+    /// <summary>Link body — no corner fillets (sharp ends meet hubs cleanly).</summary>
     private int BuildLink(RhinoDoc doc, EdgeGeom eg)
     {
         var curve = eg.Curve;
@@ -192,82 +199,71 @@ public sealed class RoadSurfaceGenerator
         var created = 0;
         var halfW = eg.WidthDoc * 0.5;
         var edgeId = eg.Edge.RhinoObjectId.ToString();
-
-        // Optional center median (green) — carve from roadway conceptually as separate strip
         var medianHalf = eg.MedianWidthDoc * 0.5;
-        var roadwayHalf = halfW;
+
         if (medianHalf > _docTolerance && medianHalf < halfW - _docTolerance)
         {
             var medianClosed = BuildOffsetStrip(mid, medianHalf);
             if (medianClosed is not null)
-            {
-                var filleted = TryFillet(medianClosed, eg.CornerRadiusDoc * 0.5);
-                created += AddPlanarBreps(doc, filleted ?? medianClosed, LayerGreenery, edgeId: edgeId);
-            }
+                created += AddPlanarBreps(doc, medianClosed, LayerGreenery, edgeId: edgeId);
         }
 
-        var roadwayClosed = BuildOffsetStrip(mid, roadwayHalf);
+        var roadwayClosed = BuildOffsetStrip(mid, halfW);
         if (roadwayClosed is not null)
         {
-            // If median exists, roadway is ring: outer road − median
             if (medianHalf > _docTolerance && medianHalf < halfW - _docTolerance)
             {
                 var medianInner = BuildOffsetStrip(mid, medianHalf);
                 if (medianInner is not null)
                 {
                     foreach (var ring in BooleanDifferenceCurves(roadwayClosed, medianInner))
+                        created += AddPlanarBreps(doc, ring, LayerRoadway, edgeId: edgeId);
+                }
+                else
+                    created += AddPlanarBreps(doc, roadwayClosed, LayerRoadway, edgeId: edgeId);
+            }
+            else
+                created += AddPlanarBreps(doc, roadwayClosed, LayerRoadway, edgeId: edgeId);
+        }
+
+        // Parking strip(s) between roadway edge and sidewalk
+        var afterRoad = halfW;
+        if (eg.ParkingWidthDoc > _docTolerance && roadwayClosed is not null)
+        {
+            var parkOuter = halfW + eg.ParkingWidthDoc;
+            var parkClosed = BuildOffsetStrip(mid, parkOuter);
+            if (parkClosed is not null)
+            {
+                foreach (var p in BooleanDifferenceCurves(parkClosed, roadwayClosed))
+                    created += AddPlanarBreps(doc, p, LayerParking, edgeId: edgeId);
+                afterRoad = parkOuter;
+            }
+        }
+
+        if (eg.SidewalkDoc > _docTolerance)
+        {
+            var green = Math.Min(eg.SidewalkGreenDoc, eg.SidewalkDoc * 0.9);
+            var walkOuter = afterRoad + eg.SidewalkDoc;
+            var outerClosed = BuildOffsetStrip(mid, walkOuter);
+            var innerForWalk = BuildOffsetStrip(mid, afterRoad);
+
+            if (outerClosed is not null && innerForWalk is not null)
+            {
+                if (green > _docTolerance)
+                {
+                    var greenOuter = BuildOffsetStrip(mid, afterRoad + green);
+                    if (greenOuter is not null)
                     {
-                        var f = TryFillet(ring, eg.CornerRadiusDoc * 0.35);
-                        created += AddPlanarBreps(doc, f ?? ring, LayerRoadway, edgeId: edgeId);
+                        foreach (var g in BooleanDifferenceCurves(greenOuter, innerForWalk))
+                            created += AddPlanarBreps(doc, g, LayerGreenery, edgeId: edgeId);
+                        foreach (var sw in BooleanDifferenceCurves(outerClosed, greenOuter))
+                            created += AddPlanarBreps(doc, sw, LayerSidewalk, edgeId: edgeId);
                     }
                 }
                 else
                 {
-                    var f = TryFillet(roadwayClosed, eg.CornerRadiusDoc * 0.35);
-                    created += AddPlanarBreps(doc, f ?? roadwayClosed, LayerRoadway, edgeId: edgeId);
-                }
-            }
-            else
-            {
-                var f = TryFillet(roadwayClosed, eg.CornerRadiusDoc * 0.35);
-                created += AddPlanarBreps(doc, f ?? roadwayClosed, LayerRoadway, edgeId: edgeId);
-            }
-        }
-
-        // Sidewalks + optional sidewalk green strip
-        if (eg.SidewalkDoc > _docTolerance)
-        {
-            var green = Math.Min(eg.SidewalkGreenDoc, eg.SidewalkDoc * 0.9);
-            var walkHalf = halfW + eg.SidewalkDoc;
-            var outerClosed = BuildOffsetStrip(mid, walkHalf);
-
-            if (green > _docTolerance && outerClosed is not null && roadwayClosed is not null)
-            {
-                // green band: from roadway edge outward by `green`
-                var greenOuterHalf = halfW + green;
-                var greenOuter = BuildOffsetStrip(mid, greenOuterHalf);
-                if (greenOuter is not null)
-                {
-                    foreach (var g in BooleanDifferenceCurves(greenOuter, roadwayClosed))
-                    {
-                        var f = TryFillet(g, eg.CornerRadiusDoc * 0.25);
-                        created += AddPlanarBreps(doc, f ?? g, LayerGreenery, edgeId: edgeId);
-                    }
-
-                    // remaining sidewalk: outer − greenOuter
-                    foreach (var sw in BooleanDifferenceCurves(outerClosed, greenOuter))
-                    {
-                        var f = TryFillet(sw, eg.CornerRadiusDoc * 0.25);
-                        created += AddPlanarBreps(doc, f ?? sw, LayerSidewalk, edgeId: edgeId);
-                    }
-                }
-            }
-            else if (outerClosed is not null && roadwayClosed is not null)
-            {
-                foreach (var sw in BooleanDifferenceCurves(outerClosed, roadwayClosed))
-                {
-                    var f = TryFillet(sw, eg.CornerRadiusDoc * 0.25);
-                    created += AddPlanarBreps(doc, f ?? sw, LayerSidewalk, edgeId: edgeId);
+                    foreach (var sw in BooleanDifferenceCurves(outerClosed, innerForWalk))
+                        created += AddPlanarBreps(doc, sw, LayerSidewalk, edgeId: edgeId);
                 }
             }
         }
@@ -275,10 +271,14 @@ public sealed class RoadSurfaceGenerator
         if (eg.GenerateMarkings && eg.Lanes > 0)
             created += AddLaneMarkings(doc, mid, eg.WidthDoc, eg.Lanes, eg.OneWay, edgeId);
 
+        if (eg.OneWay)
+            created += AddOneWayArrows(doc, mid, edgeId);
+
         mid.Dispose();
         return created;
     }
 
+    /// <summary>Hub — boolean union; fillet only outer sidewalk silhouette (street corners).</summary>
     private int BuildHub(RhinoDoc doc, RoadNode node, List<EdgeGeom> incident, double hubRadiusDoc)
     {
         if (incident.Count == 1 || node.Degree == 1)
@@ -294,19 +294,29 @@ public sealed class RoadSurfaceGenerator
             var halfW = eg.WidthDoc * 0.5;
             var roadClosed = BuildOffsetStrip(tail, halfW);
             if (roadClosed is not null)
+                created += AddPlanarBreps(doc, roadClosed, LayerRoadway, nodeId: node.Id);
+
+            var after = halfW + eg.ParkingWidthDoc;
+            if (eg.ParkingWidthDoc > _docTolerance && roadClosed is not null)
             {
-                var f = TryFillet(roadClosed, hubRadiusDoc > 0 ? hubRadiusDoc : eg.CornerRadiusDoc);
-                created += AddPlanarBreps(doc, f ?? roadClosed, LayerRoadway, nodeId: node.Id);
+                var park = BuildOffsetStrip(tail, after);
+                if (park is not null)
+                {
+                    foreach (var p in BooleanDifferenceCurves(park, roadClosed))
+                        created += AddPlanarBreps(doc, p, LayerParking, nodeId: node.Id);
+                }
             }
 
             if (eg.SidewalkDoc > _docTolerance)
             {
-                var outer = BuildOffsetStrip(tail, halfW + eg.SidewalkDoc);
-                if (outer is not null && roadClosed is not null)
+                var outer = BuildOffsetStrip(tail, after + eg.SidewalkDoc);
+                var inner = BuildOffsetStrip(tail, after);
+                if (outer is not null && inner is not null)
                 {
-                    foreach (var sw in BooleanDifferenceCurves(outer, roadClosed))
+                    foreach (var sw in BooleanDifferenceCurves(outer, inner))
                     {
-                        var f = TryFillet(sw, hubRadiusDoc > 0 ? hubRadiusDoc : eg.CornerRadiusDoc);
+                        // Dead-end: light fillet optional on outer only
+                        var f = TryFilletOuterOnly(sw, hubRadiusDoc > 0 ? hubRadiusDoc : eg.CornerRadiusDoc);
                         created += AddPlanarBreps(doc, f ?? sw, LayerSidewalk, nodeId: node.Id);
                     }
                 }
@@ -332,16 +342,12 @@ public sealed class RoadSurfaceGenerator
             if (roadClosed is not null)
                 roadTails.Add(roadClosed);
 
-            if (eg.SidewalkDoc > _docTolerance)
-            {
-                var fullClosed = BuildOffsetStrip(tail, halfW + eg.SidewalkDoc);
-                if (fullClosed is not null)
-                    fullTails.Add(fullClosed);
-            }
+            var fullHalf = halfW + eg.ParkingWidthDoc + eg.SidewalkDoc;
+            var fullClosed = BuildOffsetStrip(tail, Math.Max(fullHalf, halfW));
+            if (fullClosed is not null)
+                fullTails.Add(fullClosed);
             else if (roadClosed is not null)
-            {
                 fullTails.Add(roadClosed.DuplicateCurve());
-            }
 
             tail.Dispose();
         }
@@ -360,11 +366,9 @@ public sealed class RoadSurfaceGenerator
             throw new InvalidOperationException("CreateBooleanUnion failed for roadway tails");
         }
 
+        // Roadway at hub: keep sharp (no full-contour fillet)
         foreach (var c in roadUnion)
-        {
-            var f = TryFillet(c, hubRadiusDoc);
-            createdHub += AddPlanarBreps(doc, f ?? c, LayerRoadway, nodeId: node.Id);
-        }
+            createdHub += AddPlanarBreps(doc, c, LayerRoadway, nodeId: node.Id);
 
         if (fullTails.Count > 0)
         {
@@ -377,7 +381,8 @@ public sealed class RoadSurfaceGenerator
                     {
                         foreach (var sw in BooleanDifferenceCurves(outer, inner))
                         {
-                            var f = TryFillet(sw, hubRadiusDoc);
+                            // External street-corner look: fillet outer sidewalk ring only
+                            var f = TryFilletOuterOnly(sw, hubRadiusDoc);
                             createdHub += AddPlanarBreps(doc, f ?? sw, LayerSidewalk, nodeId: node.Id);
                         }
                     }
@@ -394,15 +399,17 @@ public sealed class RoadSurfaceGenerator
         return createdHub;
     }
 
-    /// <summary>Round sharp corners of a closed planar curve; returns original on failure.</summary>
-    private Curve? TryFillet(Curve closed, double radiusDoc)
+    /// <summary>
+    /// Fillet closed curve corners only when radius is meaningful.
+    /// Used on hub sidewalk outer rings (external corners), not on link rectangles.
+    /// </summary>
+    private Curve? TryFilletOuterOnly(Curve closed, double radiusDoc)
     {
         if (closed is null || !closed.IsValid || radiusDoc <= _docTolerance * 2)
             return null;
 
         try
         {
-            // RhinoCommon: fillet all corners of a polycurve / polyline-like curve
             var filleted = Curve.CreateFilletCornersCurve(closed, radiusDoc, _docTolerance, Math.PI / 180.0);
             if (filleted is not null && filleted.IsValid)
             {
@@ -411,12 +418,105 @@ public sealed class RoadSurfaceGenerator
                 return filleted;
             }
         }
-        catch
-        {
-            // keep unfilleted geometry
-        }
+        catch { /* keep unfilleted */ }
 
         return null;
+    }
+
+    private int AddCrossingMarkings(RhinoDoc doc, RoadNode node, List<EdgeGeom> incident)
+    {
+        var created = 0;
+        var stopOffset = StopLineOffsetMeters * _metersToDoc;
+        var crossDepth = CrosswalkDepthMeters * _metersToDoc;
+        var stripe = CrosswalkStripeMeters * _metersToDoc;
+
+        foreach (var eg in incident)
+        {
+            var dir = DirectionFromNode(eg, node.Id);
+            if (!dir.Unitize()) continue;
+
+            var nodePt = IsStart(eg, node.Id) ? eg.Curve.PointAtStart : eg.Curve.PointAtEnd;
+            // Place stop line slightly into the link, outside the hub pad
+            var along = Math.Max(eg.ExtStart, eg.ExtEnd);
+            if (along < _docTolerance) along = stopOffset;
+            var stopCenter = nodePt + dir * (along + stopOffset);
+
+            var perp = Vector3d.CrossProduct(dir, Vector3d.ZAxis);
+            if (!perp.Unitize())
+            {
+                perp = Vector3d.CrossProduct(dir, Vector3d.XAxis);
+                perp.Unitize();
+            }
+
+            var halfW = eg.WidthDoc * 0.5;
+            var a = stopCenter + perp * halfW;
+            var b = stopCenter - perp * halfW;
+            created += AddCurve(doc, new LineCurve(a, b), LayerCrossing, nodeId: node.Id);
+
+            // Crosswalk stripes between node and stop line
+            var crossStart = nodePt + dir * Math.Max(along * 0.3, _docTolerance * 10);
+            var nStripes = Math.Max(2, (int)(crossDepth / Math.Max(stripe * 2, _docTolerance)));
+            for (var i = 0; i < nStripes; i++)
+            {
+                var t = (i + 0.5) / nStripes;
+                var c = crossStart + dir * (crossDepth * t);
+                var sa = c + perp * halfW;
+                var sb = c - perp * halfW;
+                created += AddCurve(doc, new LineCurve(sa, sb), LayerCrossing, nodeId: node.Id);
+            }
+        }
+
+        return created;
+    }
+
+    private int AddOneWayArrows(RhinoDoc doc, Curve center, string edgeId)
+    {
+        var len = center.GetLength();
+        var spacing = ArrowSpacingMeters * _metersToDoc;
+        var arrowLen = ArrowLengthMeters * _metersToDoc;
+        var halfW = ArrowHalfWidthMeters * _metersToDoc;
+        if (len < arrowLen * 2) return 0;
+
+        var created = 0;
+        var plane = Plane.WorldXY;
+        if (center.TryGetPlane(out var cp, _docTolerance * 10))
+            plane = cp;
+
+        for (var d = spacing; d < len - arrowLen; d += spacing)
+        {
+            if (!center.LengthParameter(d, out var t0)) continue;
+            if (!center.LengthParameter(d + arrowLen, out var t1)) continue;
+
+            var tip = center.PointAt(t1);
+            var tail = center.PointAt(t0);
+            var dir = tip - tail;
+            if (!dir.Unitize()) continue;
+
+            var perp = Vector3d.CrossProduct(dir, plane.ZAxis);
+            if (!perp.Unitize()) continue;
+
+            // Chevron: tail-left → tip → tail-right
+            var left = tail + perp * halfW;
+            var right = tail - perp * halfW;
+            var poly = new PolylineCurve(new[] { left, tip, right });
+            created += AddCurve(doc, poly, LayerArrows, edgeId: edgeId);
+        }
+
+        return created;
+    }
+
+    private Vector3d DirectionFromNode(EdgeGeom eg, string nodeId)
+    {
+        var curve = eg.Curve;
+        if (IsStart(eg, nodeId))
+        {
+            curve.LengthParameter(Math.Min(1.0 * _metersToDoc, curve.GetLength() * 0.1), out var t);
+            return curve.PointAt(t) - curve.PointAtStart;
+        }
+
+        var len = curve.GetLength();
+        curve.LengthParameter(Math.Max(len - 1.0 * _metersToDoc, len * 0.9), out var t2);
+        return curve.PointAt(t2) - curve.PointAtEnd;
     }
 
     private static double ComputeExtension(double maxWidthAtNode, double edgeLength)
@@ -491,10 +591,7 @@ public sealed class RoadSurfaceGenerator
             var result = Curve.CreateBooleanUnion(curves, _docTolerance);
             return result is null || result.Length == 0 ? new List<Curve>() : result.ToList();
         }
-        catch
-        {
-            return new List<Curve>();
-        }
+        catch { return new List<Curve>(); }
     }
 
     private List<Curve> BooleanDifferenceCurves(Curve outer, Curve inner)
@@ -504,10 +601,7 @@ public sealed class RoadSurfaceGenerator
             var result = Curve.CreateBooleanDifference(outer, inner, _docTolerance);
             return result is null || result.Length == 0 ? new List<Curve>() : result.ToList();
         }
-        catch
-        {
-            return new List<Curve>();
-        }
+        catch { return new List<Curve>(); }
     }
 
     private int AddPlanarBreps(RhinoDoc doc, Curve closed, string layerPath, string? edgeId = null, string? nodeId = null)
@@ -537,6 +631,19 @@ public sealed class RoadSurfaceGenerator
         return count;
     }
 
+    private int AddCurve(RhinoDoc doc, Curve c, string layerPath, string? edgeId = null, string? nodeId = null)
+    {
+        if (c is null || !c.IsValid) return 0;
+        var layerIndex = EnsureLayerPath(doc, layerPath, null);
+        var attrs = new ObjectAttributes { LayerIndex = layerIndex };
+        attrs.SetUserString(RoadSurfaceCleanup.GeneratedByKey, RoadSurfaceCleanup.GeneratedByValue);
+        if (edgeId is not null)
+            attrs.SetUserString(RoadSurfaceCleanup.SourceEdgeKey, edgeId);
+        if (nodeId is not null)
+            attrs.SetUserString(RoadSurfaceCleanup.SourceNodeKey, nodeId);
+        return doc.Objects.AddCurve(c, attrs) != Guid.Empty ? 1 : 0;
+    }
+
     private int AddLaneMarkings(RhinoDoc doc, Curve center, double widthDoc, int lanes, bool oneWay, string edgeId)
     {
         if (lanes < 1) return 0;
@@ -544,18 +651,10 @@ public sealed class RoadSurfaceGenerator
         if (center.TryGetPlane(out var cp, _docTolerance * 10))
             plane = cp;
 
-        var layerIndex = EnsureLayerPath(doc, LayerMarkings, null);
         var count = 0;
-
-        // one_way: single center line if lanes>=1; two_way: lanes-1 dividers
         if (oneWay)
         {
-            // centerline only
-            var attrs = new ObjectAttributes { LayerIndex = layerIndex };
-            attrs.SetUserString(RoadSurfaceCleanup.GeneratedByKey, RoadSurfaceCleanup.GeneratedByValue);
-            attrs.SetUserString(RoadSurfaceCleanup.SourceEdgeKey, edgeId);
-            if (doc.Objects.AddCurve(center.DuplicateCurve(), attrs) != Guid.Empty)
-                count++;
+            count += AddCurve(doc, center.DuplicateCurve(), LayerMarkings, edgeId: edgeId);
             return count;
         }
 
@@ -567,13 +666,7 @@ public sealed class RoadSurfaceGenerator
             var offs = center.Offset(plane, offset, _docTolerance, CurveOffsetCornerStyle.Smooth);
             if (offs is null) continue;
             foreach (var c in offs)
-            {
-                var attrs = new ObjectAttributes { LayerIndex = layerIndex };
-                attrs.SetUserString(RoadSurfaceCleanup.GeneratedByKey, RoadSurfaceCleanup.GeneratedByValue);
-                attrs.SetUserString(RoadSurfaceCleanup.SourceEdgeKey, edgeId);
-                if (doc.Objects.AddCurve(c, attrs) != Guid.Empty)
-                    count++;
-            }
+                count += AddCurve(doc, c, LayerMarkings, edgeId: edgeId);
         }
 
         return count;
@@ -584,23 +677,7 @@ public sealed class RoadSurfaceGenerator
         var dirs = new List<Vector3d>();
         foreach (var eg in incident)
         {
-            var curve = eg.Curve;
-            Point3d p0, p1;
-            if (IsStart(eg, node.Id))
-            {
-                p0 = curve.PointAtStart;
-                curve.LengthParameter(Math.Min(eg.ExtStart + _docTolerance, curve.GetLength() * 0.5), out var t);
-                p1 = curve.PointAt(t);
-            }
-            else
-            {
-                p0 = curve.PointAtEnd;
-                var len = curve.GetLength();
-                curve.LengthParameter(Math.Max(len - eg.ExtEnd - _docTolerance, len * 0.5), out var t);
-                p1 = curve.PointAt(t);
-            }
-
-            var v = p1 - p0;
+            var v = DirectionFromNode(eg, node.Id);
             if (v.Unitize())
                 dirs.Add(v);
         }
@@ -708,6 +785,7 @@ public sealed class RoadSurfaceGenerator
         public double CornerRadiusDoc;
         public double MedianWidthDoc;
         public double SidewalkGreenDoc;
+        public double ParkingWidthDoc;
         public bool OneWay;
     }
 
