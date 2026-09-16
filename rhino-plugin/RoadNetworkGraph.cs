@@ -1,66 +1,59 @@
-using Rhino.Geometry;
+namespace UrbanBridge.Plugin;
 
-namespace UrbanBridge.Rhino;
-
-/// <summary>Node type derived from edge degree.</summary>
 public enum NodeType
 {
+    Intersection,
     DeadEnd,
-    Through,
-    Intersection
+    Terminal,
+    Junction,
 }
 
-/// <summary>Severity of a network validation issue.</summary>
 public enum IssueSeverity
 {
     Info,
     Warning,
-    Error
+    Error,
 }
 
-/// <summary>A computed intersection / endpoint in the road graph.</summary>
 public sealed class RoadNode
 {
     public required string Id { get; init; }
-    public required Point3d Position { get; init; }
+    public double X { get; init; }
+    public double Y { get; init; }
+    public double Z { get; init; }
     public int Degree { get; set; }
     public NodeType Type { get; set; }
-    public List<Guid> ConnectedEdgeIds { get; } = new();
 }
 
-/// <summary>A road segment corresponding to one Rhino curve.</summary>
 public sealed class RoadEdge
 {
-    public required Guid RhinoObjectId { get; init; }
+    public Guid RhinoObjectId { get; init; }
     public required string StartNodeId { get; init; }
     public required string EndNodeId { get; init; }
     public double LengthMeters { get; init; }
-    public string RoadClass { get; init; } = "local";
-    public int Lanes { get; init; }
     public double WidthMeters { get; init; }
+    public int Lanes { get; init; }
+    public required string RoadClass { get; init; }
+    public bool IsTerminal { get; init; }
 }
 
-/// <summary>A validation finding about the road network.</summary>
 public sealed class NetworkIssue
 {
     public required string Type { get; init; }
-    public required IssueSeverity Severity { get; init; }
+    public IssueSeverity Severity { get; init; }
     public required string Message { get; init; }
-    public List<Guid> RelatedEdgeIds { get; init; } = new();
     public string? RelatedNodeId { get; init; }
+    public List<Guid> RelatedEdgeIds { get; init; } = new();
 }
 
-/// <summary>Aggregated statistics for the current road network.</summary>
 public sealed class NetworkStats
 {
     public double TotalLengthM { get; set; }
-    public Dictionary<string, double> LengthByClass { get; } = new(StringComparer.Ordinal);
     public int IntersectionCount { get; set; }
     public int DeadEndCount { get; set; }
     public int ComponentCount { get; set; }
 }
 
-/// <summary>In-memory graph built from all curves on the Roads layer(s).</summary>
 public sealed class RoadNetworkGraph
 {
     public List<RoadNode> Nodes { get; } = new();

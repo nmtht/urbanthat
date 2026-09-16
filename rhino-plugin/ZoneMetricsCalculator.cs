@@ -1,43 +1,43 @@
-using Rhino;
 using Rhino.Geometry;
 
-namespace UrbanBridge.Rhino;
+namespace UrbanBridge.Plugin;
 
-/// <summary>Computes area-based metrics for a zone (document units → m²).</summary>
+/// <summary>Area / FAR / population / jobs from zone boundary + attributes.</summary>
 public static class ZoneMetricsCalculator
 {
-    public static ZoneMetrics Compute(ZoneRecord zone, double metersToDocScale)
+    public static ZoneMetrics Compute(ZoneRecord zone, double lengthScaleDocToM)
     {
-        // AreaMassProperties returns area in document units²; convert to m².
-        var amp = AreaMassProperties.Compute(zone.Boundary);
-        var areaDoc = amp?.Area ?? 0.0;
-        // doc_unit → meters: 1 doc unit = metersToDocScale meters? 
-        // RhinoMath.UnitScale(ModelUnit, Meters) converts length doc→m, so area factor is scale².
-        var scaleToMeters = metersToDocScale; // length scale doc→m
-        var areaSqm = Math.Abs(areaDoc) * scaleToMeters * scaleToMeters;
-
-        var metrics = new ZoneMetrics
+        double areaSqm = 0;
+        if (zone.Boundary is not null && zone.Boundary.IsValid)
         {
-            AreaSqm = areaSqm,
-            BuildableAreaSqm = areaSqm * zone.Far,
-            GreenAreaSqm = areaSqm * zone.GreenRatio,
+            var amp = AreaMassProperties.Compute(zone.Boundary);
+            if (amp is not null)
+                areaSqm = amp.Area * lengthScaleDocToM * lengthScaleDocToM;
+        }
+
+        var green = Math.Clamp(zone.GreenRatio, 0, 1) * areaSqm;
+        var buildable = Math.Max(0, areaSqm - green) * Math.Max(0, zone.Far);
+
+        // Rough occupancy heuristics for MVP dashboard
+        var (popFactor, jobFactor) = zone.ZoneType.ToLowerInvariant() switch
+        {
+            "residential" => (0.04, 0.005),
+            "commercial" => (0.005, 0.05),
+            "mixed_use" => (0.025, 0.025),
+            "industrial" => (0.002, 0.03),
+            "green" => (0.0, 0.0),
+            "public" => (0.01, 0.02),
+            _ => (0.03, 0.01),
         };
 
-        var hectares = areaSqm / 10_000.0;
-        var defaults = ZoneTypeDefaults.Get(zone.ZoneType);
-
-        // mixed_use simplification (TZ §3): 50% residential density + 50% commercial jobs density
-        if (string.Equals(zone.ZoneType, "mixed_use", StringComparison.OrdinalIgnoreCase))
+        return new ZoneMetrics
         {
-            metrics.EstimatedPopulation = hectares * 0.5 * defaults.PopulationPerHa;
-            metrics.EstimatedJobs = hectares * 0.5 * defaults.JobsPerHa;
-        }
-        else
-        {
-            metrics.EstimatedPopulation = hectares * defaults.PopulationPerHa;
-            metrics.EstimatedJobs = hectares * defaults.JobsPerHa;
-        }
-
-        return metrics;
+            AreaSqm = areaSqm,
+            BuildableAreaSqm = buildable,
+            EstimatedPopulation = areaSqm * popFactor,
+            EstimatedJobs = areaSqm * jobFactor,
+            GreenAreaSqm = green,
+            RoadFrontageM = 0, // filled by ZoneRoadAccessChecker
+        };
     }
 }
