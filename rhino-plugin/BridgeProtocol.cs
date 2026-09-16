@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace UrbanBridge.Rhino;
@@ -25,3 +26,46 @@ public sealed record MeshPayload(
     [property: JsonPropertyName("normals")] IReadOnlyList<double>? Normals);
 
 public sealed record PolylinePayload([property: JsonPropertyName("points")] IReadOnlyList<double> Points);
+
+/// <summary>JSON message builders for the WebSocket bridge.</summary>
+public static class BridgeProtocol
+{
+    private static readonly JsonSerializerOptions Opts = new()
+    {
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+    };
+
+    private static long Ts() => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+
+    public static string Heartbeat() =>
+        JsonSerializer.Serialize(new BridgeMessage("heartbeat", Timestamp: Ts()), Opts);
+
+    public static string ObjectsUpsert(IReadOnlyList<ObjectPayload> objects) =>
+        JsonSerializer.Serialize(new BridgeMessage("objects_upsert", Objects: objects.Cast<object>().ToList(), Timestamp: Ts()), Opts);
+
+    public static string ObjectDeleted(Guid id) =>
+        JsonSerializer.Serialize(new BridgeMessage("object_deleted", Id: id.ToString(), Timestamp: Ts()), Opts);
+
+    public static string RoadNetworkUpdate(RoadNetworkGraph graph) =>
+        JsonSerializer.Serialize(new
+        {
+            type = "road_network_update",
+            timestamp = Ts(),
+            edges = graph.Edges.Count,
+            nodes = graph.Nodes.Count,
+            issues = graph.Issues.Count,
+            stats = graph.Stats,
+        }, Opts);
+
+    public static string ZoneAnalysisUpdate(ZoneAnalysis analysis) =>
+        JsonSerializer.Serialize(new
+        {
+            type = "zone_analysis_update",
+            timestamp = Ts(),
+            zones = analysis.Zones.Count,
+            issues = analysis.Issues.Count,
+            total_area_sqm = analysis.TotalAreaSqm,
+            population = analysis.TotalPopulation,
+            jobs = analysis.TotalJobs,
+        }, Opts);
+}

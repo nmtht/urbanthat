@@ -3,7 +3,6 @@ using Rhino.DocObjects;
 
 namespace UrbanBridge.Rhino;
 
-/// <summary>Additional BridgeServer members expected by DocumentEventHandlers / UI.</summary>
 public sealed partial class BridgeServer
 {
     public int ClientCount => ConnectedClientCount;
@@ -23,8 +22,7 @@ public sealed partial class BridgeServer
         if (document is null || rhinoObject is null) return;
         try
         {
-            var payload = ObjectSerializer.Serialize(rhinoObject);
-            if (payload is not null)
+            if (ObjectSerializer.TrySerialize(document, rhinoObject, out var payload) && payload is not null)
                 QueueObjectUpsert(payload);
         }
         catch { }
@@ -49,8 +47,8 @@ public sealed partial class BridgeServer
                 if (obj is null || obj.IsDeleted) continue;
                 try
                 {
-                    var p = ObjectSerializer.Serialize(obj);
-                    if (p is not null) objects.Add(p);
+                    if (ObjectSerializer.TrySerialize(document, obj, out var p) && p is not null)
+                        objects.Add(p);
                 }
                 catch { }
             }
