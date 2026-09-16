@@ -3,117 +3,137 @@ using Rhino.Geometry;
 namespace UrbanBridge.Rhino;
 
 /// <summary>
-/// Street-corner fillets via pure geometry of two outer curb lines.
-/// Does NOT rely on CreateFilletCurves (failed on non-touching offset lines).
+/// Pairwise outer-curb fillets at road hubs (geometric, no CreateFilletCurves).
+/// Legs sorted CCW; each consecutive pair builds one corner arc on the outer curb wedge.
 /// </summary>
 public static class IntersectionFillet
 {
-    public readonly struct HubLeg
+    public sealed class HubLeg
     {
-        public Vector3d Outbound { get; init; }
-        public double OuterHalf { get; init; }
-        public double RoadHalf { get; init; }
-        public double Radius { get; init; }
-        public double ExtLength { get; init; }
+        public Vector3d Outbound;
+        public double OuterHalf;
+        public double RoadHalf;
+        public double Radius;
+        public double ExtLength;
     }
 
-    /// <summary>Open arc curves for each consecutive pair of legs (CCW sorted).</summary>
-    public static List<Curve> BuildPairwiseOuterArcs(
-        Point3d nodePt,
-        IReadOnlyList<HubLeg> legsCcw,
-        double tolerance)
+    public static List<T> SortByOutboundAngle<T>(IList<T> items, Func<T, Vector3d> getDir)
     {
-        var arcs = new List<Curve>();
-        var n = legsCcw.Count;
-        if (n < 2) return arcs;
-
-        for (var i = 0; i < n; i++)
+        var list = items.ToList();
+        list.Sort((x, y) =>
         {
-            var a = legsCcw[i];
-            var b = legsCcw[(i + 1) % n];
-            var arc = TryCornerArc(nodePt, a, b, useOuter: true, tolerance);
-            if (arc is not null)
-                arcs.Add(arc);
-        }
-
-        return arcs;
+            var dx = getDir(x); dx.Z = 0;
+            var dy = getDir(y); dy.Z = 0;
+            if (!dx.Unitize()) return -1;
+            if (!dy.Unitize()) return 1;
+            var ax = Math.Atan2(dx.Y, dx.X);
+            var ay = Math.Atan2(dy.Y, dy.X);
+            return ax.CompareTo(ay);
+        });
+        return list;
     }
 
-    /// <summary>Closed corner pads (arc + two radials to virtual tip) for planar breps.</summary>
-    public static List<Curve> BuildPairwiseCornerPads(
-        Point3d nodePt,
-        IReadOnlyList<HubLeg> legsCcw,
-        bool useOuter,
-        double tolerance)
+    public static double ClampRadius(double requested, double halfA, double halfB, double turnRadians)
     {
-        var pads = new List<Curve>();
-        var n = legsCcw.Count;
-        if (n < 2) return pads;
-
-        for (var i = 0; i < n; i++)
-        {
-            var a = legsCcw[i];
-            var b = legsCcw[(i + 1) % n];
-            var pad = TryCornerPad(nodePt, a, b, useOuter, tolerance);
-            if (pad is not null)
-                pads.Add(pad);
-        }
-
-        return pads;
+        if (requested <= 0) return 0;
+        var turn = Math.Abs(turnRadians);
+        if (turn < 1e-6 || turn > Math.PI - 1e-6) return requested;
+        // Limit radius so tangent points stay within extension of both legs
+        var sinHalf = Math.Sin(turn * 0.5);
+        if (sinHalf < 1e-6) return requested;
+        var maxByAngle = Math.Min(halfA, halfB) / Math.Max(sinHalf, 0.1);
+        return Math.Min(requested, maxByAngle * 2.0);
     }
 
-    private static Curve? TryCornerArc(
-        Point3d nodePt, HubLeg a, HubLeg b, bool useOuter, double tolerance)
+    public static IEnumerable<Curve> BuildPairwiseOuterArcs(
+        Point3d nodePt, IList<HubLeg> legs, double tolerance)
     {
-        if (!TryCornerGeometry(nodePt, a, b, useOuter, tolerance,
-                out var pStart, out var pEnd, out var pMid, out var radius))
-            return null;
-
-        try
+        if (legs.Count < 2) yield break;
+        for (var i = 0; i < legs.Count; i++)
         {
-            var arc = new Arc(pStart, pMid, pEnd);
-            if (!arc.IsValid || arc.Radius < tolerance * 2)
-                return null;
-            return new ArcCurve(arc);
-        }
-        catch
-        {
-            return null;
+            var a = legs[i];
+            var b = legs[(i + 1) % legs.Count];
+            if (!TryCornerGeometry(nodePt, a, b, useOuter: true, tolerance,
+                    out var pStart, out var pEnd, out var pMid, out _))
+                continue;
+            Arc arc;
+            try { arc = new Arc(pStart, pMid, pEnd); }
+            catch { continue; }
+            if (!arc.IsValid || arc.Length < tolerance * 5) continue;
+            yield return new ArcCurve(arc);
         }
     }
 
-    private static Curve? TryCornerPad(
-        Point3d nodePt, HubLeg a, HubLeg b, bool useOuter, double tolerance)
+    public static IEnumerable<Curve> BuildPairwiseCornerPads(
+        Point3d nodePt, IList<HubLeg> legs, bool useOuter, double tolerance)
     {
-        if (!TryCornerGeometry(nodePt, a, b, useOuter, tolerance,
-                out var pStart, out var pEnd, out var pMid, out var radius))
-            return null;
-
-        try
+        if (legs.Count < 2) yield break;
+        for (var i = 0; i < legs.Count; i++)
         {
-            var arc = new Arc(pStart, pMid, pEnd);
-            if (!arc.IsValid) return null;
+            var a = legs[i];
+            var b = legs[(i + 1) % legs.Count];
+            if (!TryCornerGeometry(nodePt, a, b, useOuter, tolerance,
+                    out var pStart, out var pEnd, out var pMid, out var radius))
+                continue;
 
-            // Closed pad: arc + chord (fills the cut-off tip region)
-            var arcCrv = new ArcCurve(arc);
-            var chord = new LineCurve(pEnd, pStart);
-            var joined = Curve.JoinCurves(new Curve[] { arcCrv, chord }, tolerance * 10);
-            if (joined is null || joined.Length == 0) return null;
+            // Closed pad: tangent points + arc + back along virtual corner
+            Arc arc;
+            try { arc = new Arc(pStart, pMid, pEnd); }
+            catch { continue; }
+            if (!arc.IsValid) continue;
+
+            // Virtual corner for the pad tip
+            if (!TryVirtualCorner(nodePt, a, b, useOuter, tolerance, out var corner))
+                corner = pMid; // fallback
+
+            var parts = new List<Curve>
+            {
+                new ArcCurve(arc),
+                new LineCurve(pEnd, corner),
+                new LineCurve(corner, pStart),
+            };
+            var joined = Curve.JoinCurves(parts, tolerance * 10);
+            if (joined is null || joined.Length == 0) continue;
             var loop = joined[0];
-            if (!loop.IsClosed)
-                loop.MakeClosed(tolerance * 10);
-            return loop.IsValid ? loop : null;
-        }
-        catch
-        {
-            return null;
+            if (!loop.IsClosed) loop.MakeClosed(tolerance * 10);
+            if (loop.IsValid && loop.IsClosed)
+                yield return loop;
         }
     }
 
-    /// <summary>
-    /// Core geometry: two offset curb lines → virtual corner P → fillet arc points.
-    /// Outer curb of A = right of outbound A; outer of B = left of outbound B (CCW legs).
-    /// </summary>
+    private static bool TryVirtualCorner(
+        Point3d nodePt, HubLeg a, HubLeg b, bool useOuter, double tolerance, out Point3d corner)
+    {
+        corner = Point3d.Origin;
+        return TryCornerGeometry(nodePt, a, b, useOuter, tolerance,
+            out _, out _, out _, out _) &&
+            LineLineIntersection(
+                GetOrigin(nodePt, a, useOuter, true, tolerance),
+                Flatten(a.Outbound),
+                GetOrigin(nodePt, b, useOuter, false, tolerance),
+                Flatten(b.Outbound),
+                out corner);
+    }
+
+    private static Point3d GetOrigin(Point3d nodePt, HubLeg leg, bool useOuter, bool isA, double tolerance)
+    {
+        var dir = Flatten(leg.Outbound);
+        if (!dir.Unitize()) return nodePt;
+        var left = Vector3d.CrossProduct(Vector3d.ZAxis, dir);
+        left.Unitize();
+        var half = useOuter ? leg.OuterHalf : leg.RoadHalf;
+        half = Math.Max(half, tolerance * 10);
+        // A uses left, B uses right (see TryCornerGeometry)
+        var side = isA ? left : -left;
+        return nodePt + side * half;
+    }
+
+    private static Vector3d Flatten(Vector3d v)
+    {
+        v.Z = 0;
+        return v;
+    }
+
     private static bool TryCornerGeometry(
         Point3d nodePt,
         HubLeg a,
@@ -135,16 +155,19 @@ public static class IntersectionFillet
         var leftA = Vector3d.CrossProduct(Vector3d.ZAxis, dirA);
         var leftB = Vector3d.CrossProduct(Vector3d.ZAxis, dirB);
         if (!leftA.Unitize() || !leftB.Unitize()) return false;
-        var rightA = -leftA;
+        var rightB = -leftB;
 
         var halfA = useOuter ? a.OuterHalf : a.RoadHalf;
         var halfB = useOuter ? b.OuterHalf : b.RoadHalf;
         halfA = Math.Max(halfA, tolerance * 10);
         halfB = Math.Max(halfB, tolerance * 10);
 
-        // Outer curb origins near the node
-        var originA = nodePt + rightA * halfA;
-        var originB = nodePt + leftB * halfB;
+        // legsCcw are sorted CCW (SortByOutboundAngle), so for a consecutive pair (a, b)
+        // the wedge to fillet lies between a's LEFT curb and b's RIGHT curb —
+        // e.g. East road (a) + North road (b) CCW-adjacent -> NE corner needs
+        // East's north (left) curb + North's east (right) curb, not the mirrored SW pair.
+        var originA = nodePt + leftA * halfA;
+        var originB = nodePt + rightB * halfB;
 
         radius = Math.Min(
             a.Radius > 0 ? a.Radius : b.Radius,
@@ -168,112 +191,59 @@ public static class IntersectionFillet
         if (!LineLineIntersection(originA, dirA, originB, dirB, out var corner))
             return false;
 
-        // Directions from corner along each curb INTO the road (away from exterior tip).
-        // originA should lie roughly along +dirA from corner (or -dirA).
-        var toOriginA = originA - corner;
-        var toOriginB = originB - corner;
-        var armA = (toOriginA * dirA >= 0) ? dirA : -dirA;
-        var armB = (toOriginB * dirB >= 0) ? dirB : -dirB;
-        if (!armA.Unitize() || !armB.Unitize()) return false;
+        // Distance from curb origin along outbound to tangent point
+        // For equal half-widths: arm = radius / tan(turn/2)
+        // General: offset from virtual corner along each curb by radius * tan((pi-turn)/2) wait
+        // Standard fillet: from virtual corner, go back along each ray by radius / tan(halfAngle)
+        var halfTurn = ccwTurn * 0.5;
+        var tanHalf = Math.Tan(halfTurn);
+        if (Math.Abs(tanHalf) < 1e-9) return false;
+        var arm = radius / tanHalf;
 
-        // Convex corner angle between arms (should match ccwTurn approximately)
-        var alpha = Vector3d.VectorAngle(armA, armB);
-        if (alpha < 15.0 * Math.PI / 180.0 || alpha > 165.0 * Math.PI / 180.0)
-            return false;
+        // Tangent points: from virtual corner, walk back along each curb direction (toward node side is -dir for outbound curbs)
+        // Curb lines run along dirA / dirB; virtual corner is typically OUT beyond the node for convex outer corners.
+        // Walk from corner toward the node along -dir.
+        pStart = corner - dirA * arm;
+        pEnd = corner - dirB * arm;
 
-        var half = alpha * 0.5;
-        var tanHalf = Math.Tan(half);
-        if (tanHalf < 1e-8) return false;
-
-        // Distance from vertex to tangent points: R / tan(α/2)
-        var d = radius / tanHalf;
-
-        // Clamp so tangent points stay within a reasonable distance of the origins
-        var maxD = Math.Max(a.ExtLength, b.ExtLength) * 2 + halfA + halfB;
-        if (d > maxD)
+        // Arc midpoint on the angle bisector, radius away from corner
+        var bisector = dirA + dirB;
+        if (!bisector.Unitize())
         {
-            d = maxD;
-            radius = d * tanHalf;
+            // 180 deg degenerate
+            bisector = leftA;
+            if (!bisector.Unitize()) return false;
         }
-        if (radius <= tolerance * 2) return false;
+        // For outer (convex) corner the arc sits on the side opposite the road centers:
+        // from corner, move along the outward normal of the turn (bisector rotated?)
+        // Virtual corner is outside; arc bows toward the roads = toward node roughly.
+        var toNode = nodePt - corner;
+        toNode.Z = 0;
+        if (!toNode.Unitize()) toNode = -bisector;
+        pMid = corner + toNode * radius;
 
-        pStart = corner + armA * d;
-        pEnd = corner + armB * d;
-
-        // Arc midpoint: from corner along angle bisector, distance R / sin(α/2)
-        var bis = armA + armB;
-        if (!bis.Unitize()) return false;
-        var sinHalf = Math.Sin(half);
-        if (sinHalf < 1e-8) return false;
-        var centerDist = radius / sinHalf;
-        var center = corner + bis * centerDist;
-
-        // Midpoint of arc is center + (corner-center).Unitized * radius... 
-        // Actually mid of minor arc is center projected toward the chord midpoint from center
-        // at distance radius, on the side of the bisector (away from corner for exterior?)
-        // For a fillet that CUTS the tip, the arc is between pStart and pEnd
-        // with center on the bisector INSIDE the angle (center is between corner and the network).
-        // center = corner + bis * (R/sin(half)) — bis points into the angle from corner
-        // Arc mid (minor arc) = center - bis * radius  (toward the chord / away from deep angle)
-        // Wait: distance center to corner = R/sin(half).
-        // Distance center to pStart = R.
-        // Point on arc closest to corner is center - bis*R (if bis points from corner through center).
-        // The MINOR arc mid (the one cutting the tip) is the point on the arc nearest to corner:
-        pMid = center - bis * radius;
-
-        // Sanity: pMid should be between chord and corner
-        var midChord = (pStart + pEnd) * 0.5;
-        if (pMid.DistanceTo(corner) > midChord.DistanceTo(corner) + tolerance)
-        {
-            // flipped — use the other side
-            pMid = center + bis * radius;
-        }
-
+        // Sanity: arc length roughly radius * turn
+        var chord = pStart.DistanceTo(pEnd);
+        if (chord < tolerance * 5) return false;
         return true;
     }
 
     private static bool LineLineIntersection(
-        Point3d o1, Vector3d d1, Point3d o2, Vector3d d2, out Point3d intersection)
+        Point3d p1, Vector3d d1, Point3d p2, Vector3d d2, out Point3d result)
     {
-        intersection = Point3d.Origin;
-        // 2D: o1 + t d1 = o2 + s d2
+        result = Point3d.Origin;
+        d1.Z = 0; d2.Z = 0;
+        if (!d1.Unitize() || !d2.Unitize()) return false;
+
+        // 2D line-line: p1 + s*d1 = p2 + t*d2
         var denom = d1.X * d2.Y - d1.Y * d2.X;
         if (Math.Abs(denom) < 1e-12) return false;
-        var dx = o2.X - o1.X;
-        var dy = o2.Y - o1.Y;
-        var t = (dx * d2.Y - dy * d2.X) / denom;
-        intersection = o1 + d1 * t;
-        intersection.Z = o1.Z;
+
+        var dx = p2.X - p1.X;
+        var dy = p2.Y - p1.Y;
+        var s = (dx * d2.Y - dy * d2.X) / denom;
+        result = p1 + d1 * s;
+        result.Z = p1.Z;
         return true;
     }
-
-    public static double ClampRadius(
-        double requested, double halfWidthA, double halfWidthB, double turnRadians)
-    {
-        if (requested <= 0) return 0;
-        var turn = Math.Abs(turnRadians);
-        if (turn < 1e-3 || turn > Math.PI * 1.9) return 0;
-
-        var minHalf = Math.Max(Math.Min(halfWidthA, halfWidthB), 1e-6);
-        var byWidth = minHalf * 2.5;
-        var byAngle = minHalf / Math.Max(Math.Sin(Math.Min(turn, Math.PI) * 0.5), 0.12);
-        return Math.Min(requested, Math.Min(byWidth, byAngle));
-    }
-
-    public static List<T> SortByOutboundAngle<T>(
-        IReadOnlyList<T> items, Func<T, Vector3d> outbound)
-    {
-        return items
-            .Select(item =>
-            {
-                var d = outbound(item);
-                d.Z = 0;
-                return (item, angle: Math.Atan2(d.Y, d.X));
-            })
-            .OrderBy(t => t.angle)
-            .Select(t => t.item)
-            .ToList();
-    }
-
-    public static Curve? FilletExteriorCorners(Curve closed, double radius, double tolerance) => null;
 }
