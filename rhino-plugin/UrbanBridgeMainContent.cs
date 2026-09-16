@@ -5,7 +5,6 @@ namespace UrbanBridge.Rhino;
 
 /// <summary>
 /// Single plugin UI: tabs Roads | Zoning | Dashboard.
-/// Only the active tab is refreshed from heavy analysis; others use cached snapshots.
 /// </summary>
 public sealed class UrbanBridgeMainContent : Panel
 {
