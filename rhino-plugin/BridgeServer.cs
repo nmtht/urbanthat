@@ -2,8 +2,6 @@ using System.Net;
 using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
-using System.Text.Json;
-using System.Text.Json.Serialization;
 using Rhino;
 
 namespace UrbanBridge.Rhino;
@@ -12,11 +10,10 @@ public sealed partial class BridgeServer : IDisposable
 {
     private const int Port = 7890;
     private const string WebSocketMagic = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
-    private static readonly JsonSerializerOptions JsonOptions = new() { DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull };
     private readonly object _clientsLock = new();
     private readonly HashSet<BridgeClient> _clients = new();
     private readonly object _upsertsLock = new();
-    private readonly Dictionary<Guid, ObjectPayload> _pendingUpserts = new();
+    private readonly Dictionary<string, ObjectPayload> _pendingUpserts = new();
     private readonly CancellationTokenSource _stopping = new();
     private readonly RoadNetworkGraphBuilder _roadBuilder = new();
     private readonly RoadNetworkValidator _roadValidator = new();
@@ -63,13 +60,8 @@ public sealed partial class BridgeServer : IDisposable
     }
 
     public void Dispose() => Stop();
-
     public void NoteRoadGraphDirty() => LastRoadGraphChangeUtc = DateTime.UtcNow;
-
-    public void MarkRoadSurfaceGenerated()
-    {
-        LastRoadSurfaceGenUtc = DateTime.UtcNow;
-    }
+    public void MarkRoadSurfaceGenerated() => LastRoadSurfaceGenUtc = DateTime.UtcNow;
 
     public void RebuildAndSendRoadNetwork(RhinoDoc doc)
     {
