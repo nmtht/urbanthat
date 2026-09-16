@@ -2,7 +2,7 @@ using Rhino;
 using Rhino.DocObjects;
 using Rhino.Geometry;
 
-namespace UrbanBridge.Rhino;
+namespace UrbanBridge.Plugin;
 
 public sealed partial class RoadSurfaceGenerator
 {
