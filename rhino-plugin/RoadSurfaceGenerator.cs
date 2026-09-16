@@ -4,7 +4,9 @@ using Rhino.Geometry;
 
 namespace UrbanBridge.Plugin;
 
-/// <summary>Road surfaces + pairwise street-corner fillets at hubs.</summary>
+/// <summary>
+/// Road surfaces: links along edges; hubs = union of tails + fillet concave corners only.
+/// </summary>
 public sealed partial class RoadSurfaceGenerator
 {
     public const string LayerRoadway = "Roads::Surface::Roadway";
@@ -109,8 +111,17 @@ public sealed partial class RoadSurfaceGenerator
         var edgesByNode = new Dictionary<string, List<EdgeGeom>>(StringComparer.Ordinal);
         foreach (var eg in edgeData.Values)
         {
-            void Add(string id) { if (!edgesByNode.TryGetValue(id, out var list)) { list = new List<EdgeGeom>(); edgesByNode[id] = list; } list.Add(eg); }
-            Add(eg.Edge.StartNodeId); Add(eg.Edge.EndNodeId);
+            void Add(string id)
+            {
+                if (!edgesByNode.TryGetValue(id, out var list))
+                {
+                    list = new List<EdgeGeom>();
+                    edgesByNode[id] = list;
+                }
+                list.Add(eg);
+            }
+            Add(eg.Edge.StartNodeId);
+            Add(eg.Edge.EndNodeId);
         }
 
         foreach (var node in graph.Nodes)
@@ -130,6 +141,7 @@ public sealed partial class RoadSurfaceGenerator
                 result.FailedHubs++;
             }
         }
+
         doc.Views.Redraw();
         return result;
     }
@@ -139,7 +151,8 @@ public sealed partial class RoadSurfaceGenerator
         var curve = eg.Curve;
         var len = curve.GetLength();
         if (len <= eg.ExtStart + eg.ExtEnd + _docTolerance * 5) return 0;
-        if (!curve.LengthParameter(eg.ExtStart, out var t0) || !curve.LengthParameter(len - eg.ExtEnd, out var t1) || t1 <= t0) return 0;
+        if (!curve.LengthParameter(eg.ExtStart, out var t0) || !curve.LengthParameter(len - eg.ExtEnd, out var t1) || t1 <= t0)
+            return 0;
         var mid = curve.Trim(t0, t1);
         if (mid is null || !mid.IsValid) return 0;
         var created = 0;
@@ -152,34 +165,52 @@ public sealed partial class RoadSurfaceGenerator
             var m = BuildOffsetStrip(mid, medianHalf);
             if (m is not null) created += AddPlanarBreps(doc, m, LayerGreenery, edgeId: edgeId);
         }
+
         var roadwayClosed = BuildOffsetStrip(mid, halfW);
         if (roadwayClosed is not null)
         {
             if (medianHalf > _docTolerance && medianHalf < halfW - _docTolerance)
             {
                 var mi = BuildOffsetStrip(mid, medianHalf);
-                if (mi is not null) foreach (var ring in BooleanDifferenceCurves(roadwayClosed, mi)) created += AddPlanarBreps(doc, ring, LayerRoadway, edgeId: edgeId);
-                else created += AddPlanarBreps(doc, roadwayClosed, LayerRoadway, edgeId: edgeId);
+                if (mi is not null)
+                {
+                    foreach (var piece in BooleanDifferenceCurves(roadwayClosed, mi))
+                        created += AddPlanarBreps(doc, piece, LayerRoadway, edgeId: edgeId);
+                }
+                else
+                    created += AddPlanarBreps(doc, roadwayClosed, LayerRoadway, edgeId: edgeId);
             }
-            else created += AddPlanarBreps(doc, roadwayClosed, LayerRoadway, edgeId: edgeId);
+            else
+                created += AddPlanarBreps(doc, roadwayClosed, LayerRoadway, edgeId: edgeId);
         }
-        var afterRoad = halfW;
+
+        var afterRoad = halfW + eg.ParkingWidthDoc;
         if (eg.ParkingWidthDoc > _docTolerance && roadwayClosed is not null)
         {
-            var park = BuildOffsetStrip(mid, halfW + eg.ParkingWidthDoc);
-            if (park is not null) { foreach (var p in BooleanDifferenceCurves(park, roadwayClosed)) created += AddPlanarBreps(doc, p, LayerParking, edgeId: edgeId); afterRoad = halfW + eg.ParkingWidthDoc; }
+            var parkOuter = BuildOffsetStrip(mid, afterRoad);
+            if (parkOuter is not null)
+            {
+                foreach (var p in BooleanDifferenceCurves(parkOuter, roadwayClosed))
+                    created += AddPlanarBreps(doc, p, LayerParking, edgeId: edgeId);
+            }
         }
+
         if (eg.SidewalkDoc > _docTolerance)
         {
             var outer = BuildOffsetStrip(mid, afterRoad + eg.SidewalkDoc);
             var inner = BuildOffsetStrip(mid, afterRoad);
             if (outer is not null && inner is not null)
+            {
                 foreach (var sw in BooleanDifferenceCurves(outer, inner))
                     created += AddPlanarBreps(doc, sw, LayerSidewalk, edgeId: edgeId);
+            }
         }
-        if (eg.GenerateMarkings && eg.Lanes > 0) created += AddLaneMarkings(doc, mid, eg.WidthDoc, eg.Lanes, eg.OneWay, edgeId);
-        if (eg.OneWay) created += AddOneWayArrows(doc, mid, edgeId);
-        mid.Dispose();
+
+        if (eg.GenerateMarkings)
+            created += AddLaneMarkings(doc, mid, eg.WidthDoc, eg.Lanes, eg.OneWay, edgeId);
+        if (eg.OneWay)
+            created += AddOneWayArrows(doc, mid, edgeId);
+
         return created;
     }
 }
