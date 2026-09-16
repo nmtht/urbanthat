@@ -69,7 +69,7 @@ public sealed partial class BridgeServer : IDisposable
         try
         {
             var graph = _roadBuilder.Build(doc);
-            _roadValidator.Validate(graph, doc);
+            _roadValidator.Validate(doc, graph);
             LatestRoadNetwork = graph;
             LastRoadGraphChangeUtc = DateTime.UtcNow;
             RoadNetworkUpdated?.Invoke(graph);
@@ -86,11 +86,7 @@ public sealed partial class BridgeServer : IDisposable
         if (doc is null) return;
         try
         {
-            var analysis = _zoneService.Analyze(doc, LatestRoadNetwork);
-            analysis.LastRoadGraphChangeUtc = LastRoadGraphChangeUtc;
-            analysis.LastRoadSurfaceGenUtc = LastRoadSurfaceGenUtc;
-            analysis.RoadSurfacesStale =
-                LastRoadGraphChangeUtc is { } g && LastRoadSurfaceGenUtc is { } s && g > s;
+            var analysis = _zoneService.Analyze(doc, LastRoadGraphChangeUtc, LastRoadSurfaceGenUtc);
             LatestZoneAnalysis = analysis;
             ZoneAnalysisUpdated?.Invoke(analysis);
             BroadcastJson(BridgeProtocol.ZoneAnalysisUpdate(analysis));

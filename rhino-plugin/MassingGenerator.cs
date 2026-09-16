@@ -1,6 +1,6 @@
 using Rhino;
 using Rhino.DocObjects;
-using Rhino.Geometry;
+using global::Rhino.Geometry;
 
 namespace UrbanBridge.Rhino;
 
@@ -41,9 +41,7 @@ public sealed class MassingBatchResult
     public double TotalBuiltFloorAreaSqm { get; set; }
 }
 
-/// <summary>
-/// One block per zone from FAR / height_max / setback (Stage 2.3).
-/// </summary>
+/// <summary>One block per zone from FAR / height_max / setback (Stage 2.3).</summary>
 public sealed class MassingGenerator
 {
     public const string LayerMassing = "Buildings::Massing";
@@ -100,7 +98,6 @@ public sealed class MassingGenerator
         var type = zone.ZoneType?.ToLowerInvariant() ?? "";
         if (type is "green" or "public")
         {
-            // Informational only — not an error
             analysis.Issues.Add(new ZoneIssue
             {
                 Type = ZoneIssueType.MissingAttributes,
@@ -174,28 +171,6 @@ public sealed class MassingGenerator
             var extrude = Extrusion.Create(envelope, heightDoc, cap: true);
             if (extrude is not null)
                 volume = extrude.ToBrep();
-            if (volume is null || !volume.IsValid)
-            {
-                // Fallback: planar brep extruded via surface
-                var planar = Brep.CreatePlanarBreps(envelope, _docTolerance);
-                if (planar is { Length: > 0 })
-                {
-                    var srf = planar[0].Faces[0].DuplicateFace(false);
-                    if (srf is not null)
-                    {
-                        var path = new LineCurve(
-                            Point3d.Origin,
-                            new Point3d(0, 0, heightDoc));
-                        // Simple offset of planar face
-                        volume = planar[0].DuplicateBrep();
-                        var xf = Transform.Translation(0, 0, heightDoc);
-                        var top = planar[0].DuplicateBrep();
-                        top.Transform(xf);
-                        // Join sides roughly via CreateFromOffsetFace is complex; use Extrusion path
-                        volume = null;
-                    }
-                }
-            }
         }
         catch
         {
@@ -204,7 +179,6 @@ public sealed class MassingGenerator
 
         if (volume is null || !volume.IsValid)
         {
-            // Last resort: box from bounding box of envelope
             var bbox = envelope.GetBoundingBox(true);
             var box = new Box(
                 Plane.WorldXY,
@@ -256,12 +230,10 @@ public sealed class MassingGenerator
         if (setbackDoc <= _docTolerance)
             return curve;
 
-        // Inward offset: negative offset for CCW curves
         var plane = Plane.WorldXY;
         if (curve.TryGetPlane(out var cp, _docTolerance * 10))
             plane = cp;
 
-        // Ensure CCW so negative offset goes inward
         if (curve.ClosedCurveOrientation(plane) == CurveOrientation.Clockwise)
             curve.Reverse();
 
@@ -278,7 +250,6 @@ public sealed class MassingGenerator
         if (offsets is null || offsets.Length == 0)
             return null;
 
-        // Pick largest closed piece
         Curve? best = null;
         double bestLen = 0;
         foreach (var o in offsets)
@@ -288,9 +259,12 @@ public sealed class MassingGenerator
                 o.MakeClosed(_docTolerance * 10);
             if (!o.IsClosed) continue;
 
-            // Reject self-intersecting
-            var events = Rhino.Geometry.Intersect.Intersection.CurveSelf(o, _docTolerance);
-            if (events is { Count: > 0 }) continue;
+            try
+            {
+                var events = global::Rhino.Geometry.Intersect.Intersection.CurveSelf(o, _docTolerance);
+                if (events is { Count: > 0 }) continue;
+            }
+            catch { /* keep candidate */ }
 
             var len = o.GetLength();
             if (len > bestLen)
@@ -307,7 +281,6 @@ public sealed class MassingGenerator
         ZoneAnalysis analysis, ZoneRecord zone,
         MassingIssueType type, IssueSeverity severity, string message)
     {
-        // Surface massing issues in the shared zone issues list for the panel
         analysis.Issues.Add(new ZoneIssue
         {
             Type = type switch
