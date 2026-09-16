@@ -2,7 +2,7 @@ using Rhino;
 using Rhino.DocObjects;
 using Rhino.Geometry;
 
-namespace UrbanBridge.Rhino;
+namespace UrbanBridge.Plugin;
 
 /// <summary>Converts supported Rhino geometry to the meter-based wire representation.</summary>
 public static class ObjectSerializer
