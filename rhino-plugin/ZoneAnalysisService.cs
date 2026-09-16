@@ -2,7 +2,7 @@ using Rhino;
 using Rhino.DocObjects;
 using Rhino.Geometry;
 
-namespace UrbanBridge.Rhino;
+namespace UrbanBridge.Plugin;
 
 /// <summary>Collects zones from the document, computes metrics, validates, checks road access.</summary>
 public sealed class ZoneAnalysisService
@@ -53,7 +53,7 @@ public sealed class ZoneAnalysisService
     private static bool IsStale(DateTime? graphChange, DateTime? surfaceGen)
     {
         if (graphChange is null) return false;
-        if (surfaceGen is null) return true; // roads edited or present, never generated
+        if (surfaceGen is null) return true;
         return graphChange > surfaceGen;
     }
 

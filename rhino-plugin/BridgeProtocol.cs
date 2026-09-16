@@ -1,7 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
-namespace UrbanBridge.Rhino;
+namespace UrbanBridge.Plugin;
 
 public sealed record BridgeMessage(
     [property: JsonPropertyName("type")] string Type,
