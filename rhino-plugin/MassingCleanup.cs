@@ -1,9 +1,9 @@
 using Rhino;
 using Rhino.DocObjects;
 
-namespace UrbanBridge.Rhino;
+namespace UrbanBridge.Plugin;
 
-/// <summary>Removes generated building massing by UserText marker.</summary>
+/// <summary>Deletes previously generated massing objects tagged with UserText markers.</summary>
 public static class MassingCleanup
 {
     public const string GeneratedByKey = "generated_by";
@@ -15,23 +15,19 @@ public static class MassingCleanup
 
     public static int DeleteAllGenerated(RhinoDoc doc)
     {
-        if (doc is null) return 0;
-        var toDelete = new List<Guid>();
+        var ids = new List<Guid>();
         foreach (var obj in doc.Objects)
         {
             if (obj is null || obj.IsDeleted) continue;
-            var marker = obj.Attributes.GetUserString(GeneratedByKey);
-            if (string.Equals(marker, GeneratedByValue, StringComparison.Ordinal))
-                toDelete.Add(obj.Id);
+            var v = obj.Attributes.GetUserString(GeneratedByKey);
+            if (string.Equals(v, GeneratedByValue, StringComparison.Ordinal))
+                ids.Add(obj.Id);
         }
-
         var deleted = 0;
-        foreach (var id in toDelete)
+        foreach (var id in ids)
         {
-            if (doc.Objects.Delete(id, true))
-                deleted++;
+            if (doc.Objects.Delete(id, true)) deleted++;
         }
-
         return deleted;
     }
 }

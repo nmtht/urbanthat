@@ -1,40 +1,28 @@
-namespace UrbanBridge.Rhino;
+namespace UrbanBridge.Plugin;
 
-/// <summary>Hard-coded defaults per zone_type (TZ Stage 2.2 §1). Not user-editable in this stage.</summary>
+/// <summary>Default FAR / height / green ratio by zone_type.</summary>
 public static class ZoneTypeDefaults
 {
+    public const double DefaultSetbackM = 3.0;
+
     public static readonly string[] ZoneTypes =
     {
         "residential", "commercial", "mixed_use", "industrial", "green", "public",
     };
 
-    public sealed record Defaults(
-        double Far,
-        double HeightMaxM,
-        double GreenRatio,
-        double PopulationPerHa,
-        double JobsPerHa);
+    public readonly record struct Defaults(double Far, double HeightMaxM, double GreenRatio);
 
-    private static readonly Dictionary<string, Defaults> Table =
-        new(StringComparer.OrdinalIgnoreCase)
-        {
-            // population/jobs densities are people or jobs per hectare
-            ["residential"] = new(1.5, 24, 0.25, 250, 0),
-            ["commercial"] = new(2.5, 30, 0.10, 0, 400),
-            ["mixed_use"] = new(2.0, 27, 0.15, 150, 400), // mixed: 50% pop + 50% jobs — see calculator
-            ["industrial"] = new(1.0, 15, 0.10, 0, 150),
-            ["green"] = new(0.0, 0, 1.0, 0, 0),
-            ["public"] = new(0.8, 12, 0.30, 0, 0),
-        };
-
-    public const double DefaultSetbackM = 3.0;
-
-    public static Defaults Get(string zoneType)
+    public static Defaults Get(string zoneType) => zoneType.ToLowerInvariant() switch
     {
-        if (Table.TryGetValue(zoneType, out var d))
-            return d;
-        return Table["residential"];
-    }
+        "residential" => new(1.5, 24, 0.25),
+        "commercial" => new(2.5, 36, 0.10),
+        "mixed_use" => new(2.0, 30, 0.15),
+        "industrial" => new(1.0, 18, 0.05),
+        "green" => new(0.0, 0, 1.0),
+        "public" => new(0.5, 15, 0.30),
+        _ => new(1.5, 24, 0.25),
+    };
 
-    public static bool IsKnown(string zoneType) => Table.ContainsKey(zoneType);
+    public static bool IsKnown(string zoneType) =>
+        ZoneTypes.Any(t => t.Equals(zoneType, StringComparison.OrdinalIgnoreCase));
 }

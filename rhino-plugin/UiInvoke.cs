@@ -1,19 +1,11 @@
 using Eto.Forms;
 
-namespace UrbanBridge.Rhino;
+namespace UrbanBridge.Plugin;
 
-/// <summary>
-/// Coalesces rapid UI updates so TextArea/Label churn does not flood the Eto message pump.
-/// </summary>
-internal static class UiInvoke
+/// <summary>Coalesced UI updates on the Rhino/Eto main thread.</summary>
+public static class UiInvoke
 {
-    private const int DefaultDelayMs = 80;
-
-    /// <summary>
-    /// Schedule <paramref name="action"/> on the UI thread; if called again before the delay,
-    /// only the latest action runs (previous pending is dropped).
-    /// </summary>
-    public static void Coalesce(ref System.Threading.Timer? timer, object gate, Action action, int delayMs = DefaultDelayMs)
+    public static void Coalesce(ref System.Threading.Timer? timer, object gate, Action action, int ms = 120)
     {
         lock (gate)
         {
@@ -22,16 +14,10 @@ internal static class UiInvoke
             {
                 try
                 {
-                    if (Application.Instance != null)
-                        Application.Instance.AsyncInvoke(action);
-                    else
-                        action();
+                    Application.Instance.AsyncInvoke(action);
                 }
-                catch
-                {
-                    try { action(); } catch { /* ignore UI teardown */ }
-                }
-            }, null, delayMs, System.Threading.Timeout.Infinite);
+                catch { /* UI may be tearing down */ }
+            }, null, ms, System.Threading.Timeout.Infinite);
         }
     }
 
@@ -44,13 +30,10 @@ internal static class UiInvoke
         }
     }
 
-    /// <summary>Format issue lines with a hard cap to keep TextArea cheap.</summary>
-    public static string FormatCappedLines(IEnumerable<string> lines, int maxLines = 40)
+    public static string FormatCappedLines(IEnumerable<string> lines, int max = 80)
     {
-        var list = lines as IList<string> ?? lines.ToList();
-        if (list.Count == 0) return string.Empty;
-        if (list.Count <= maxLines)
-            return string.Join("\n", list);
-        return string.Join("\n", list.Take(maxLines)) + $"\n… +{list.Count - maxLines} more";
+        var list = lines.ToList();
+        if (list.Count <= max) return string.Join("\n", list);
+        return string.Join("\n", list.Take(max)) + $"\n… and {list.Count - max} more";
     }
 }

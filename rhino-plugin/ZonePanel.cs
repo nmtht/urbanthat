@@ -1,16 +1,17 @@
 using Rhino;
 using Rhino.Commands;
 
-namespace UrbanBridge.Rhino;
+namespace UrbanBridge.Plugin;
 
 /// <summary>Command UrbanBridgeZones — opens unified panel on Zoning tab.</summary>
-[System.Runtime.InteropServices.Guid("B2C3D4E5-F6A7-4B8C-9D0E-1F2A3B4C5D6E")]
-public sealed class UrbanBridgeZonesCommand : Command
+[System.Runtime.InteropServices.Guid("B6E1D8A0-3A2C-4D7B-8A0E-1C5A7B9D4F6C")]
+public class UrbanBridgeZonesCommand : Command
 {
     public override string EnglishName => "UrbanBridgeZones";
 
     protected override Result RunCommand(RhinoDoc doc, RunMode mode)
     {
-        return UrbanBridgeRoadNetworkCommand.OpenUnified(doc, tabIndex: 1);
+        Rhino.UI.Panels.OpenPanel(typeof(RoadNetworkPanel));
+        return Result.Success;
     }
 }
