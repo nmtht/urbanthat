@@ -1,43 +1,35 @@
-using System.Runtime.InteropServices;
 using Rhino;
 using Rhino.Commands;
 
-namespace UrbanBridge.Rhino;
+namespace UrbanBridge.Plugin;
 
-[Guid("A9B8C7D6-E5F4-4A3B-9C2D-1E0F9A8B7C6D")]
-public sealed class UrbanBridgeStatusCommand : Command
+[System.Runtime.InteropServices.Guid("a1b2c3d4-e5f6-7890-abcd-ef1234567890")]
+public class UrbanBridgeStatusCommand : Command
 {
     public override string EnglishName => "UrbanBridgeStatus";
 
     protected override Result RunCommand(RhinoDoc doc, RunMode mode)
     {
         var plugin = UrbanBridgePlugin.Instance;
-        var server = plugin?.Server;
-
         RhinoApp.WriteLine($"[UrbanBridge] PlugIn.Id = {plugin?.Id}");
-        RhinoApp.WriteLine($"[UrbanBridge] Type.GUID = {typeof(UrbanBridgePlugin).GUID}");
-
+        var server = plugin?.Server;
         if (server is null || !server.IsRunning)
         {
             RhinoApp.WriteLine("[UrbanBridge] The bridge is not running.");
-            RhinoApp.WriteLine("[UrbanBridge] Try: disable/enable the plug-in in Options → Plug-ins, or reinstall and restart Rhino.");
-            return Result.Failure;
+            return Result.Success;
         }
 
-        RhinoApp.WriteLine($"[UrbanBridge] Running at ws://localhost:7890; clients: {server.ClientCount}.");
-        RhinoApp.WriteLine("[UrbanBridge] UI command: UrbanBridgeRoadNetwork");
+        RhinoApp.WriteLine(
+            $"[UrbanBridge] Running at ws://localhost:7890; connected clients: {server.ConnectedClientCount}.");
+        RhinoApp.WriteLine("[UrbanBridge] Open road panel: type UrbanBridgeRoadNetwork");
 
-        var graph = server.LatestRoadNetwork;
-        if (graph is not null)
-        {
-            RhinoApp.WriteLine(
-                $"[UrbanBridge] Network: {graph.Edges.Count} edges, {graph.Nodes.Count} nodes, " +
-                $"{graph.Issues.Count} issues, {graph.Stats.TotalLengthM:F1} m.");
-        }
+        var g = server.LatestRoadNetwork;
+        if (g is null)
+            RhinoApp.WriteLine("[UrbanBridge] Road network: not built yet.");
         else
-        {
-            RhinoApp.WriteLine("[UrbanBridge] Network not built yet (layer Roads + curves)." );
-        }
+            RhinoApp.WriteLine(
+                $"[UrbanBridge] Road network: {g.Edges.Count} edges, {g.Nodes.Count} nodes, " +
+                $"{g.Issues.Count} issues, length {g.Stats.TotalLengthM:F1} m.");
 
         return Result.Success;
     }

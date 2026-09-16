@@ -1,7 +1,7 @@
 using Eto.Forms;
 using Rhino;
 
-namespace UrbanBridge.Rhino;
+namespace UrbanBridge.Plugin;
 
 /// <summary>
 /// Single plugin UI: tabs Roads | Zoning | Dashboard.

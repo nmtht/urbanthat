@@ -1,41 +1,30 @@
+using System.Runtime.InteropServices;
 using Eto.Forms;
-using Rhino;
 using Rhino.UI;
 
-namespace UrbanBridge.Rhino;
+namespace UrbanBridge.Plugin;
 
-/// <summary>Dockable panel — unified UrbanBridge UI (tabs).</summary>
-[System.Runtime.InteropServices.Guid("A3F8C2E1-9B4D-4E7A-8F1C-2D5E6A9B0C3D")]
+[Guid("a3f8c2e1-9b4d-4e7a-8f1c-2d5e6a9b0c3d")]
 public class RoadNetworkPanel : Panel, IPanel
 {
     private readonly UrbanBridgeMainContent _content = new();
 
-    public static readonly System.Guid PanelId = new("A3F8C2E1-9B4D-4E7A-8F1C-2D5E6A9B0C3D");
+    public static Guid PanelId => typeof(RoadNetworkPanel).GUID;
 
     public RoadNetworkPanel()
     {
         Content = _content;
-        RhinoApp.WriteLine("[UrbanBridge] Unified panel instance created.");
+        _content.AttachServer(UrbanBridgePlugin.Instance?.Server);
     }
 
     public void PanelShown(uint documentSerialNumber, ShowPanelReason reason)
     {
-        if (reason is not (ShowPanelReason.Show or ShowPanelReason.ShowOnDeactivate))
-            return;
-
         _content.AttachServer(UrbanBridgePlugin.Instance?.Server);
-        _content.RefreshActiveTab(fromCacheOnly: true);
+        _content.RefreshActiveTab();
     }
 
     public void PanelHidden(uint documentSerialNumber, ShowPanelReason reason)
     {
-        if (reason == ShowPanelReason.HideOnDeactivate)
-            return;
-        _content.DetachServer();
-    }
-
-    public void PanelClosing(uint documentSerialNumber, bool onCloseDocument)
-    {
-        _content.DetachServer();
+        // keep server attached; no teardown on hide
     }
 }

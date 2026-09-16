@@ -1,7 +1,7 @@
 using Rhino;
 using Rhino.Commands;
 
-namespace UrbanBridge.Rhino;
+namespace UrbanBridge.Plugin;
 
 [System.Runtime.InteropServices.Guid("c4e8a1b2-3d5f-4a7c-9e1b-8f2d6a0c4b7e")]
 public class UrbanBridgeMassingCommand : Command
