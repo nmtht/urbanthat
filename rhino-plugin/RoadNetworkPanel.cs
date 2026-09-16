@@ -27,4 +27,10 @@ public class RoadNetworkPanel : Panel, IPanel
     {
         // keep server attached; no teardown on hide
     }
+
+    public void PanelClosing(uint documentSerialNumber, bool onCloseDocument)
+    {
+        if (onCloseDocument)
+            _content.DetachServer();
+    }
 }
