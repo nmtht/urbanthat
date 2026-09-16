@@ -1,7 +1,7 @@
 using Rhino.Geometry;
 using Rhino.Geometry.Intersect;
 
-namespace UrbanBridge.Rhino;
+namespace UrbanBridge.Plugin;
 
 /// <summary>Internal zone checks (overlap, self-intersect, degenerate, missing attrs).</summary>
 public sealed class ZoneValidator
@@ -16,7 +16,6 @@ public sealed class ZoneValidator
 
     public void Validate(ZoneAnalysis analysis)
     {
-        // missing_attributes + degenerate + self-intersect
         foreach (var zone in analysis.Zones)
         {
             if (zone.ZoneTypeWasMissing)
@@ -54,7 +53,6 @@ public sealed class ZoneValidator
             }
         }
 
-        // pairwise overlap / containment
         for (var i = 0; i < analysis.Zones.Count; i++)
         {
             for (var j = i + 1; j < analysis.Zones.Count; j++)
@@ -78,10 +76,7 @@ public sealed class ZoneValidator
                         });
                     }
                 }
-                catch
-                {
-                    // Non-planar or invalid — skip pair; self-intersect / degenerate already flagged
-                }
+                catch { }
             }
         }
     }

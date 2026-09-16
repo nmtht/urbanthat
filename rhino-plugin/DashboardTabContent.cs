@@ -1,7 +1,7 @@
 using Eto.Forms;
 using Rhino;
 
-namespace UrbanBridge.Rhino;
+namespace UrbanBridge.Plugin;
 
 /// <summary>Dashboard tab — paints from cached Latest* only.</summary>
 public sealed class DashboardTabContent : Panel
