@@ -6,7 +6,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>latest</LangVersion>
     <AssemblyName>UrbanBridgePlugin</AssemblyName>
-    <RootNamespace>UrbanBridge.Rhino</RootNamespace>
+    <RootNamespace>UrbanBridge.Plugin</RootNamespace>
     <!-- Keep Properties/AssemblyInfo.cs so the assembly Guid is present for Rhino PlugIn.Id -->
     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
   </PropertyGroup>

@@ -3,7 +3,7 @@ using Rhino;
 using Rhino.PlugIns;
 using Rhino.UI;
 
-namespace UrbanBridge.Rhino;
+namespace UrbanBridge.Plugin;
 
 /// <summary>Entry point for the Rhino-side UrbanBridge synchronizer.</summary>
 [Guid("E8C3A1F2-4B7D-4E9A-8C1F-3D6E9B0A2C5D")]
@@ -29,38 +29,28 @@ public sealed class UrbanBridgePlugin : PlugIn
 
             _server = new BridgeServer();
             _server.Start();
+
             _documentEvents = new DocumentEventHandlers(_server);
-            _documentEvents.Subscribe();
-            RhinoApp.WriteLine("[UrbanBridge] Rhino bridge started at ws://localhost:7890.");
+            _documentEvents.Register();
 
-            if (Id != System.Guid.Empty)
-            {
-                try
-                {
-                    Panels.RegisterPanel(this, typeof(RoadNetworkPanel), "UrbanBridge", null, PanelType.PerDoc);
-                }
-                catch (Exception ex)
-                {
-                    RhinoApp.WriteLine($"[UrbanBridge] RegisterPanel: {ex.Message}");
-                }
-            }
-
-            RhinoApp.WriteLine("[UrbanBridge] Open UI: UrbanBridgeRoadNetwork | UrbanBridgeZones | UrbanBridgeDashboard");
+            Panels.RegisterPanel(this, typeof(RoadNetworkPanel), "UrbanBridge", null);
+            RhinoApp.WriteLine("[UrbanBridge] Panel registered. Command: UrbanBridgeRoadNetwork");
             return LoadReturnCode.Success;
         }
-        catch (Exception exception)
+        catch (Exception ex)
         {
-            errorMessage = $"UrbanBridge could not start: {exception.Message}";
-            RhinoApp.WriteLine($"[UrbanBridge] {errorMessage}");
+            errorMessage = ex.Message;
+            RhinoApp.WriteLine($"[UrbanBridge] OnLoad failed: {ex}");
             return LoadReturnCode.ErrorShowDialog;
         }
     }
 
     protected override void OnShutdown()
     {
-        _documentEvents?.Dispose();
+        _documentEvents?.Unregister();
+        _documentEvents = null;
         _server?.Dispose();
-        RhinoApp.WriteLine("[UrbanBridge] Rhino bridge stopped.");
+        _server = null;
         base.OnShutdown();
     }
 }
