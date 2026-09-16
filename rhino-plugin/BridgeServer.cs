@@ -8,10 +8,7 @@ using Rhino;
 
 namespace UrbanBridge.Rhino;
 
-/// <summary>
-/// Dependency-free, loopback-only WebSocket server.
-/// </summary>
-public sealed class BridgeServer : IDisposable
+public sealed partial class BridgeServer : IDisposable
 {
     private const int Port = 7890;
     private const string WebSocketMagic = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
@@ -33,10 +30,7 @@ public sealed class BridgeServer : IDisposable
     public int ConnectedClientCount { get { lock (_clientsLock) return _clients.Count; } }
     public RoadNetworkGraph? LatestRoadNetwork { get; private set; }
     public ZoneAnalysis? LatestZoneAnalysis { get; private set; }
-
-    /// <summary>Last massing run total built GFA (m²).</summary>
     public double? LatestMassingBuiltGfaSqm { get; set; }
-
     public DateTime? LastRoadGraphChangeUtc { get; private set; }
     public DateTime? LastRoadSurfaceGenUtc { get; private set; }
 
@@ -46,10 +40,10 @@ public sealed class BridgeServer : IDisposable
     public void Start()
     {
         if (_listener is not null) return;
-        _listener = new TcpListener(System.Net.IPAddress.Loopback, Port);
+        _listener = new TcpListener(IPAddress.Loopback, Port);
         _listener.Start();
         _acceptLoop = Task.Run(AcceptLoopAsync);
-        _heartbeat = new Timer(_ => BroadcastHeartbeat(), null, 5000, 5000);
+        _heartbeat = new Timer(_ => { try { BroadcastJson(BridgeProtocol.Heartbeat()); } catch { } }, null, 5000, 5000);
         _flushUpserts = new Timer(_ => FlushPendingUpserts(), null, 200, 200);
         RhinoApp.WriteLine($"[UrbanBridge] Bridge listening on ws://localhost:{Port}");
     }
@@ -69,6 +63,13 @@ public sealed class BridgeServer : IDisposable
     }
 
     public void Dispose() => Stop();
+
+    public void NoteRoadGraphDirty() => LastRoadGraphChangeUtc = DateTime.UtcNow;
+
+    public void MarkRoadSurfaceGenerated()
+    {
+        LastRoadSurfaceGenUtc = DateTime.UtcNow;
+    }
 
     public void RebuildAndSendRoadNetwork(RhinoDoc doc)
     {
@@ -108,16 +109,6 @@ public sealed class BridgeServer : IDisposable
         }
     }
 
-    public void MarkRoadSurfaceGenerated()
-    {
-        LastRoadSurfaceGenUtc = DateTime.UtcNow;
-    }
-
-    public void NoteRoadGraphDirty()
-    {
-        LastRoadGraphChangeUtc = DateTime.UtcNow;
-    }
-
     public void QueueObjectUpsert(ObjectPayload payload)
     {
         lock (_upsertsLock)
@@ -133,16 +124,7 @@ public sealed class BridgeServer : IDisposable
             batch = _pendingUpserts.Values.ToList();
             _pendingUpserts.Clear();
         }
-        try
-        {
-            BroadcastJson(BridgeProtocol.ObjectsUpsert(batch));
-        }
-        catch { }
-    }
-
-    private void BroadcastHeartbeat()
-    {
-        try { BroadcastJson(BridgeProtocol.Heartbeat()); }
+        try { BroadcastJson(BridgeProtocol.ObjectsUpsert(batch)); }
         catch { }
     }
 
@@ -169,7 +151,7 @@ public sealed class BridgeServer : IDisposable
                 _ = Task.Run(() => HandleClientAsync(client));
             }
             catch (ObjectDisposedException) { break; }
-            catch (Exception) { if (_stopping.IsCancellationRequested) break; }
+            catch { if (_stopping.IsCancellationRequested) break; }
         }
     }
 
@@ -191,25 +173,16 @@ public sealed class BridgeServer : IDisposable
                     key = line.Substring(18).Trim();
             }
             if (key is null) return;
-            var accept = Convert.ToBase64String(
-                SHA1.HashData(Encoding.ASCII.GetBytes(key + WebSocketMagic)));
-            var response =
-                "HTTP/1.1 101 Switching Protocols\r\n" +
-                "Upgrade: websocket\r\n" +
-                "Connection: Upgrade\r\n" +
+            var accept = Convert.ToBase64String(SHA1.HashData(Encoding.ASCII.GetBytes(key + WebSocketMagic)));
+            var response = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n" +
                 $"Sec-WebSocket-Accept: {accept}\r\n\r\n";
-            var respBytes = Encoding.ASCII.GetBytes(response);
-            await stream.WriteAsync(respBytes);
-
+            await stream.WriteAsync(Encoding.ASCII.GetBytes(response));
             bridge = new BridgeClient(tcp, stream);
             lock (_clientsLock) _clients.Add(bridge);
-            RhinoApp.WriteLine($"[UrbanBridge] Client connected ({ConnectedClientCount})");
-
             if (LatestRoadNetwork is { } g)
                 bridge.SendText(Encoding.UTF8.GetBytes(BridgeProtocol.RoadNetworkUpdate(g)));
             if (LatestZoneAnalysis is { } z)
                 bridge.SendText(Encoding.UTF8.GetBytes(BridgeProtocol.ZoneAnalysisUpdate(z)));
-
             await bridge.ReceiveLoopAsync(_stopping.Token);
         }
         catch { }
@@ -219,12 +192,8 @@ public sealed class BridgeServer : IDisposable
             {
                 lock (_clientsLock) _clients.Remove(bridge);
                 bridge.Dispose();
-                RhinoApp.WriteLine($"[UrbanBridge] Client disconnected ({ConnectedClientCount})");
             }
-            else
-            {
-                try { tcp.Close(); } catch { }
-            }
+            else try { tcp.Close(); } catch { }
         }
     }
 }
@@ -257,7 +226,6 @@ internal sealed class BridgeClient : IDisposable
         {
             var n = await _stream.ReadAsync(buffer.AsMemory(0, buffer.Length), ct);
             if (n == 0) break;
-            // Ignore client frames for MVP (viewer is receive-only)
         }
     }
 
@@ -265,13 +233,9 @@ internal sealed class BridgeClient : IDisposable
     {
         var len = payload.Length;
         byte[] header;
-        if (len < 126)
-            header = new byte[] { 0x81, (byte)len };
-        else if (len < 65536)
-            header = new byte[] { 0x81, 126, (byte)(len >> 8), (byte)len };
-        else
-            header = new byte[] { 0x81, 127, 0, 0, 0, 0,
-                (byte)(len >> 24), (byte)(len >> 16), (byte)(len >> 8), (byte)len };
+        if (len < 126) header = new byte[] { 0x81, (byte)len };
+        else if (len < 65536) header = new byte[] { 0x81, 126, (byte)(len >> 8), (byte)len };
+        else header = new byte[] { 0x81, 127, 0, 0, 0, 0, (byte)(len >> 24), (byte)(len >> 16), (byte)(len >> 8), (byte)len };
         var frame = new byte[header.Length + payload.Length];
         Buffer.BlockCopy(header, 0, frame, 0, header.Length);
         Buffer.BlockCopy(payload, 0, frame, header.Length, payload.Length);
