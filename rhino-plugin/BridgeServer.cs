@@ -2,301 +2,241 @@ using System.Net;
 using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
-using System.Text.Json;
-using System.Text.Json.Serialization;
 using Rhino;
 
 namespace UrbanBridge.Rhino;
 
-/// <summary>
-/// Dependency-free, loopback-only WebSocket server. Keeping it in the .rhp makes
-/// installation through Rhino's PlugInManager a single-file operation.
-/// </summary>
-public sealed class BridgeServer : IDisposable
+public sealed partial class BridgeServer : IDisposable
 {
     private const int Port = 7890;
     private const string WebSocketMagic = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
-    private static readonly JsonSerializerOptions JsonOptions = new() { DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull };
     private readonly object _clientsLock = new();
     private readonly HashSet<BridgeClient> _clients = new();
     private readonly object _upsertsLock = new();
-    private readonly Dictionary<Guid, ObjectPayload> _pendingUpserts = new();
+    private readonly Dictionary<string, ObjectPayload> _pendingUpserts = new();
     private readonly CancellationTokenSource _stopping = new();
+    private readonly RoadNetworkGraphBuilder _roadBuilder = new();
+    private readonly RoadNetworkValidator _roadValidator = new();
+    private readonly ZoneAnalysisService _zoneService = new();
     private TcpListener? _listener;
     private Task? _acceptLoop;
     private Timer? _heartbeat;
-    private Timer? _upsertTimer;
+    private Timer? _flushUpserts;
 
     public bool IsRunning => _listener is not null;
-    public int ClientCount { get { lock (_clientsLock) return _clients.Count; } }
+    public int ConnectedClientCount { get { lock (_clientsLock) return _clients.Count; } }
+    public RoadNetworkGraph? LatestRoadNetwork { get; private set; }
+    public ZoneAnalysis? LatestZoneAnalysis { get; private set; }
+    public double? LatestMassingBuiltGfaSqm { get; set; }
+    public DateTime? LastRoadGraphChangeUtc { get; private set; }
+    public DateTime? LastRoadSurfaceGenUtc { get; private set; }
+
+    public event Action<RoadNetworkGraph>? RoadNetworkUpdated;
+    public event Action<ZoneAnalysis>? ZoneAnalysisUpdated;
 
     public void Start()
     {
+        if (_listener is not null) return;
         _listener = new TcpListener(IPAddress.Loopback, Port);
         _listener.Start();
-        _acceptLoop = Task.Run(() => AcceptLoopAsync(_stopping.Token));
-        _heartbeat = new Timer(_ => _ = BroadcastAsync(new BridgeMessage("heartbeat", Timestamp: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds())), null,
-            TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
+        _acceptLoop = Task.Run(AcceptLoopAsync);
+        _heartbeat = new Timer(_ => { try { BroadcastJson(BridgeProtocol.Heartbeat()); } catch { } }, null, 5000, 5000);
+        _flushUpserts = new Timer(_ => FlushPendingUpserts(), null, 200, 200);
+        RhinoApp.WriteLine($"[UrbanBridge] Bridge listening on ws://localhost:{Port}");
     }
 
-    /// <summary>Coalesces changes occurring in the same short Rhino operation into batch_upsert.</summary>
-    public void QueueObjectUpsert(RhinoDoc document, global::Rhino.DocObjects.RhinoObject rhinoObject)
+    public void Stop()
     {
-        if (!ObjectSerializer.TrySerialize(document, rhinoObject, out var payload) || payload is null) return;
-        lock (_upsertsLock)
+        _stopping.Cancel();
+        _heartbeat?.Dispose();
+        _flushUpserts?.Dispose();
+        try { _listener?.Stop(); } catch { }
+        _listener = null;
+        lock (_clientsLock)
         {
-            _pendingUpserts[rhinoObject.Id] = payload;
-            _upsertTimer ??= new Timer(_ => FlushUpserts(), null, Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
-            _upsertTimer.Change(TimeSpan.FromMilliseconds(75), Timeout.InfiniteTimeSpan);
+            foreach (var c in _clients) c.Dispose();
+            _clients.Clear();
         }
     }
 
-    public void SendObjectDeleted(Guid objectId)
+    public void Dispose() => Stop();
+    public void NoteRoadGraphDirty() => LastRoadGraphChangeUtc = DateTime.UtcNow;
+    public void MarkRoadSurfaceGenerated() => LastRoadSurfaceGenUtc = DateTime.UtcNow;
+
+    public void RebuildAndSendRoadNetwork(RhinoDoc doc)
     {
-        lock (_upsertsLock) _pendingUpserts.Remove(objectId);
-        _ = BroadcastAsync(new BridgeMessage("object_deleted", Id: objectId.ToString()));
+        if (doc is null) return;
+        try
+        {
+            var graph = _roadBuilder.Build(doc);
+            _roadValidator.Validate(graph, doc);
+            LatestRoadNetwork = graph;
+            LastRoadGraphChangeUtc = DateTime.UtcNow;
+            RoadNetworkUpdated?.Invoke(graph);
+            BroadcastJson(BridgeProtocol.RoadNetworkUpdate(graph));
+        }
+        catch (Exception ex)
+        {
+            RhinoApp.WriteLine($"[UrbanBridge] Road graph rebuild failed: {ex.Message}");
+        }
     }
 
-    private void FlushUpserts()
+    public void RebuildZoneAnalysis(RhinoDoc doc)
     {
-        List<object> upserts;
+        if (doc is null) return;
+        try
+        {
+            var analysis = _zoneService.Analyze(doc, LatestRoadNetwork);
+            analysis.LastRoadGraphChangeUtc = LastRoadGraphChangeUtc;
+            analysis.LastRoadSurfaceGenUtc = LastRoadSurfaceGenUtc;
+            analysis.RoadSurfacesStale =
+                LastRoadGraphChangeUtc is { } g && LastRoadSurfaceGenUtc is { } s && g > s;
+            LatestZoneAnalysis = analysis;
+            ZoneAnalysisUpdated?.Invoke(analysis);
+            BroadcastJson(BridgeProtocol.ZoneAnalysisUpdate(analysis));
+        }
+        catch (Exception ex)
+        {
+            RhinoApp.WriteLine($"[UrbanBridge] Zone analysis failed: {ex.Message}");
+        }
+    }
+
+    public void QueueObjectUpsert(ObjectPayload payload)
+    {
+        lock (_upsertsLock)
+            _pendingUpserts[payload.Id] = payload;
+    }
+
+    private void FlushPendingUpserts()
+    {
+        List<ObjectPayload> batch;
         lock (_upsertsLock)
         {
             if (_pendingUpserts.Count == 0) return;
-            upserts = _pendingUpserts.Values.Cast<object>().ToList();
+            batch = _pendingUpserts.Values.ToList();
             _pendingUpserts.Clear();
         }
-        _ = BroadcastAsync(upserts.Count == 1
-            ? new BridgeMessage("object_upserted", Object: upserts[0])
-            : new BridgeMessage("batch_upsert", Objects: upserts));
+        try { BroadcastJson(BridgeProtocol.ObjectsUpsert(batch)); }
+        catch { }
     }
 
-    public void SendFullSync(RhinoDoc document)
+    public void BroadcastJson(string json)
     {
-        var objects = new List<object>();
-        foreach (var rhinoObject in document.Objects)
+        var bytes = Encoding.UTF8.GetBytes(json);
+        lock (_clientsLock)
         {
-            if (rhinoObject.IsDeleted) continue;
-            if (ObjectSerializer.TrySerialize(document, rhinoObject, out var payload) && payload is not null) objects.Add(payload);
-        }
-        _ = BroadcastAsync(new BridgeMessage("full_sync", Objects: objects, DocumentId: document.RuntimeSerialNumber.ToString(), Units: "meters"));
-    }
-
-    private async Task AcceptLoopAsync(CancellationToken cancellationToken)
-    {
-        try
-        {
-            while (!cancellationToken.IsCancellationRequested)
+            foreach (var c in _clients.ToList())
             {
-                var tcpClient = await _listener!.AcceptTcpClientAsync(cancellationToken);
-                _ = Task.Run(() => AcceptClientAsync(tcpClient, cancellationToken), cancellationToken);
+                try { c.SendText(bytes); }
+                catch { _clients.Remove(c); c.Dispose(); }
             }
         }
-        catch (OperationCanceledException) { }
-        catch (ObjectDisposedException) when (cancellationToken.IsCancellationRequested) { }
-        catch (Exception exception)
-        {
-            RhinoApp.WriteLine($"[UrbanBridge] WebSocket accept error: {exception.Message}");
-        }
     }
 
-    private async Task AcceptClientAsync(TcpClient tcpClient, CancellationToken cancellationToken)
+    private async Task AcceptLoopAsync()
     {
-        var client = new BridgeClient(tcpClient);
-        try
+        while (!_stopping.IsCancellationRequested)
         {
-            await client.AcceptHandshakeAsync(cancellationToken);
-            lock (_clientsLock) _clients.Add(client);
-            RhinoApp.WriteLine("[UrbanBridge] Unreal client connected.");
-            await ReceiveLoopAsync(client, cancellationToken);
-        }
-        catch (OperationCanceledException) { }
-        catch (Exception exception)
-        {
-            RhinoApp.WriteLine($"[UrbanBridge] WebSocket client error: {exception.Message}");
-        }
-        finally
-        {
-            lock (_clientsLock) _clients.Remove(client);
-            client.Dispose();
-            RhinoApp.WriteLine("[UrbanBridge] Unreal client disconnected.");
-        }
-    }
-
-    private async Task ReceiveLoopAsync(BridgeClient client, CancellationToken cancellationToken)
-    {
-        while (!cancellationToken.IsCancellationRequested)
-        {
-            var json = await client.ReceiveTextAsync(cancellationToken);
-            if (json is null) return;
             try
             {
-                using var message = JsonDocument.Parse(json);
-                if (message.RootElement.TryGetProperty("type", out var type) && type.GetString() == "request_full_sync")
-                    RhinoApp.InvokeOnUiThread((Action)(() =>
-                    {
-                        if (RhinoDoc.ActiveDoc is { } document) SendFullSync(document);
-                    }));
+                var client = await _listener!.AcceptTcpClientAsync();
+                _ = Task.Run(() => HandleClientAsync(client));
             }
-            catch (JsonException exception)
-            {
-                RhinoApp.WriteLine($"[UrbanBridge] Invalid client JSON: {exception.Message}");
-            }
+            catch (ObjectDisposedException) { break; }
+            catch { if (_stopping.IsCancellationRequested) break; }
         }
     }
 
-    private async Task BroadcastAsync(BridgeMessage message)
+    private async Task HandleClientAsync(TcpClient tcp)
     {
-        var payload = JsonSerializer.Serialize(message, JsonOptions);
-        BridgeClient[] clients;
-        lock (_clientsLock) clients = _clients.ToArray();
-        foreach (var client in clients)
+        BridgeClient? bridge = null;
+        try
         {
-            try { await client.SendTextAsync(payload, _stopping.Token); }
-            catch (Exception exception) when (exception is IOException or SocketException or OperationCanceledException)
+            var stream = tcp.GetStream();
+            using var reader = new StreamReader(stream, Encoding.UTF8, false, 1024, true);
+            var requestLine = await reader.ReadLineAsync();
+            if (requestLine is null || !requestLine.StartsWith("GET ", StringComparison.Ordinal)) return;
+            string? key = null;
+            while (true)
             {
-                lock (_clientsLock) _clients.Remove(client);
-                client.Dispose();
+                var line = await reader.ReadLineAsync();
+                if (string.IsNullOrEmpty(line)) break;
+                if (line.StartsWith("Sec-WebSocket-Key:", StringComparison.OrdinalIgnoreCase))
+                    key = line.Substring(18).Trim();
             }
+            if (key is null) return;
+            var accept = Convert.ToBase64String(SHA1.HashData(Encoding.ASCII.GetBytes(key + WebSocketMagic)));
+            var response = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n" +
+                $"Sec-WebSocket-Accept: {accept}\r\n\r\n";
+            await stream.WriteAsync(Encoding.ASCII.GetBytes(response));
+            bridge = new BridgeClient(tcp, stream);
+            lock (_clientsLock) _clients.Add(bridge);
+            if (LatestRoadNetwork is { } g)
+                bridge.SendText(Encoding.UTF8.GetBytes(BridgeProtocol.RoadNetworkUpdate(g)));
+            if (LatestZoneAnalysis is { } z)
+                bridge.SendText(Encoding.UTF8.GetBytes(BridgeProtocol.ZoneAnalysisUpdate(z)));
+            await bridge.ReceiveLoopAsync(_stopping.Token);
         }
+        catch { }
+        finally
+        {
+            if (bridge is not null)
+            {
+                lock (_clientsLock) _clients.Remove(bridge);
+                bridge.Dispose();
+            }
+            else try { tcp.Close(); } catch { }
+        }
+    }
+}
+
+internal sealed class BridgeClient : IDisposable
+{
+    private readonly TcpClient _tcpClient;
+    private readonly NetworkStream _stream;
+    private readonly object _sendLock = new();
+
+    public BridgeClient(TcpClient tcp, NetworkStream stream)
+    {
+        _tcpClient = tcp;
+        _stream = stream;
+    }
+
+    public void SendText(byte[] payload)
+    {
+        lock (_sendLock)
+        {
+            var frame = BuildTextFrame(payload);
+            _stream.Write(frame, 0, frame.Length);
+        }
+    }
+
+    public async Task ReceiveLoopAsync(CancellationToken ct)
+    {
+        var buffer = new byte[4096];
+        while (!ct.IsCancellationRequested)
+        {
+            var n = await _stream.ReadAsync(buffer.AsMemory(0, buffer.Length), ct);
+            if (n == 0) break;
+        }
+    }
+
+    private static byte[] BuildTextFrame(byte[] payload)
+    {
+        var len = payload.Length;
+        byte[] header;
+        if (len < 126) header = new byte[] { 0x81, (byte)len };
+        else if (len < 65536) header = new byte[] { 0x81, 126, (byte)(len >> 8), (byte)len };
+        else header = new byte[] { 0x81, 127, 0, 0, 0, 0, (byte)(len >> 24), (byte)(len >> 16), (byte)(len >> 8), (byte)len };
+        var frame = new byte[header.Length + payload.Length];
+        Buffer.BlockCopy(header, 0, frame, 0, header.Length);
+        Buffer.BlockCopy(payload, 0, frame, header.Length, payload.Length);
+        return frame;
     }
 
     public void Dispose()
     {
-        _heartbeat?.Dispose();
-        _upsertTimer?.Dispose();
-        _stopping.Cancel();
-        _listener?.Stop();
-        lock (_clientsLock)
-        {
-            foreach (var client in _clients) client.Dispose();
-            _clients.Clear();
-        }
-        try { _acceptLoop?.Wait(TimeSpan.FromSeconds(2)); } catch (AggregateException) { }
-        _stopping.Dispose();
-        _listener = null;
-    }
-
-    private sealed class BridgeClient : IDisposable
-    {
-        private readonly TcpClient _tcpClient;
-        private readonly NetworkStream _stream;
-        private readonly SemaphoreSlim _sendLock = new(1, 1);
-
-        public BridgeClient(TcpClient tcpClient)
-        {
-            _tcpClient = tcpClient;
-            _stream = tcpClient.GetStream();
-        }
-
-        public async Task AcceptHandshakeAsync(CancellationToken cancellationToken)
-        {
-            var request = await ReadHttpHeadersAsync(cancellationToken);
-            var keyLine = request.Split("\r\n")
-                .FirstOrDefault(line => line.StartsWith("Sec-WebSocket-Key:", StringComparison.OrdinalIgnoreCase));
-            var separator = keyLine?.IndexOf(':') ?? -1;
-            var key = separator >= 0 ? keyLine![(separator + 1)..].Trim() : null;
-            if (string.IsNullOrWhiteSpace(key)) throw new InvalidDataException("Missing Sec-WebSocket-Key.");
-            var accept = Convert.ToBase64String(SHA1.HashData(Encoding.ASCII.GetBytes(key + WebSocketMagic)));
-            var response = $"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n";
-            await _stream.WriteAsync(Encoding.ASCII.GetBytes(response), cancellationToken);
-        }
-
-        public async Task<string?> ReceiveTextAsync(CancellationToken cancellationToken)
-        {
-            var header = new byte[2];
-            if (!await ReadExactlyAsync(header, cancellationToken)) return null;
-            var opcode = header[0] & 0x0F;
-            if (opcode == 0x8) return null;
-            if (opcode != 0x1) throw new InvalidDataException("Only text WebSocket frames are supported.");
-            var masked = (header[1] & 0x80) != 0;
-            if (!masked) throw new InvalidDataException("Client WebSocket frames must be masked.");
-            ulong length = (uint)(header[1] & 0x7F);
-            if (length == 126)
-            {
-                var extended = new byte[2];
-                await ReadRequiredAsync(extended, cancellationToken);
-                length = (uint)((extended[0] << 8) | extended[1]);
-            }
-            else if (length == 127)
-            {
-                var extended = new byte[8];
-                await ReadRequiredAsync(extended, cancellationToken);
-                length = 0;
-                foreach (var value in extended) length = (length << 8) | value;
-            }
-            if (length > 1_048_576) throw new InvalidDataException("WebSocket message is too large.");
-            var mask = new byte[4];
-            await ReadRequiredAsync(mask, cancellationToken);
-            var payload = new byte[(int)length];
-            await ReadRequiredAsync(payload, cancellationToken);
-            for (var index = 0; index < payload.Length; index++) payload[index] ^= mask[index % 4];
-            return Encoding.UTF8.GetString(payload);
-        }
-
-        public async Task SendTextAsync(string text, CancellationToken cancellationToken)
-        {
-            var payload = Encoding.UTF8.GetBytes(text);
-            await _sendLock.WaitAsync(cancellationToken);
-            try
-            {
-                var header = CreateTextFrameHeader(payload.Length);
-                await _stream.WriteAsync(header, cancellationToken);
-                await _stream.WriteAsync(payload, cancellationToken);
-            }
-            finally { _sendLock.Release(); }
-        }
-
-        private static byte[] CreateTextFrameHeader(int length)
-        {
-            if (length <= 125) return new byte[] { 0x81, (byte)length };
-            if (length <= ushort.MaxValue) return new byte[] { 0x81, 126, (byte)(length >> 8), (byte)length };
-            var header = new byte[10] { 0x81, 127, 0, 0, 0, 0, 0, 0, 0, 0 };
-            var value = (ulong)length;
-            for (var index = 9; index >= 2; index--)
-            {
-                header[index] = (byte)value;
-                value >>= 8;
-            }
-            return header;
-        }
-
-        private async Task<string> ReadHttpHeadersAsync(CancellationToken cancellationToken)
-        {
-            var buffer = new List<byte>(1024);
-            while (buffer.Count < 16_384)
-            {
-                var value = new byte[1];
-                await ReadRequiredAsync(value, cancellationToken);
-                buffer.Add(value[0]);
-                if (buffer.Count >= 4 && buffer[^4] == '\r' && buffer[^3] == '\n' && buffer[^2] == '\r' && buffer[^1] == '\n')
-                    return Encoding.ASCII.GetString(buffer.ToArray());
-            }
-            throw new InvalidDataException("WebSocket handshake is too large.");
-        }
-
-        private async Task ReadRequiredAsync(byte[] buffer, CancellationToken cancellationToken)
-        {
-            if (!await ReadExactlyAsync(buffer, cancellationToken)) throw new EndOfStreamException();
-        }
-
-        private async Task<bool> ReadExactlyAsync(byte[] buffer, CancellationToken cancellationToken)
-        {
-            var read = 0;
-            while (read < buffer.Length)
-            {
-                var count = await _stream.ReadAsync(buffer.AsMemory(read), cancellationToken);
-                if (count == 0) return false;
-                read += count;
-            }
-            return true;
-        }
-
-        public void Dispose()
-        {
-            _stream.Dispose();
-            _tcpClient.Dispose();
-            _sendLock.Dispose();
-        }
+        try { _stream.Dispose(); } catch { }
+        try { _tcpClient.Dispose(); } catch { }
     }
 }
