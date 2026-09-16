@@ -3,13 +3,13 @@ using Rhino.Geometry;
 namespace UrbanBridge.Plugin;
 
 /// <summary>
-/// Fillet concave corners of a closed hub polygon (the "armpits" of a cross).
+/// Fillet concave corners of a closed hub polygon (armpits of a cross).
 /// Convex tips of road arms stay sharp.
 /// </summary>
 public static class IntersectionFillet
 {
     /// <summary>
-    /// Returns a new closed curve with concave corners rounded to <paramref name="radius"/>.
+    /// New closed curve with concave corners rounded to <paramref name="radius"/>.
     /// On failure returns a duplicate of the input.
     /// </summary>
     public static Curve FilletConcaveCorners(Curve closed, double radius, double tolerance)
@@ -37,7 +37,12 @@ public static class IntersectionFillet
         }
         var ccw = area2 > 0;
 
-        // Per-vertex: optional fillet arc (null = keep sharp)
+        // Centroid — used to pick the side of the chord that cuts the corner
+        var centroid = Point3d.Origin;
+        foreach (var p in pts)
+            centroid += p;
+        centroid /= n;
+
         var arcs = new Arc?[n];
         var armIn = new double[n];
         var armOut = new double[n];
@@ -61,13 +66,13 @@ public static class IntersectionFillet
                 continue;
 
             var cross = vin.X * vout.Y - vin.Y * vout.X;
-            // CCW solid: convex = left turn (cross>0), concave = right turn (cross<0)
+            // CCW solid: concave = right turn (cross < 0)
             var concave = ccw ? cross < -1e-9 : cross > 1e-9;
             if (!concave)
                 continue;
 
             var cos = Math.Max(-1.0, Math.Min(1.0, vin * vout));
-            var turn = Math.Acos(cos); // 0..π exterior turn magnitude
+            var turn = Math.Acos(cos); // angle between edge directions, 0..π
             if (turn < 5.0 * Math.PI / 180.0 || turn > 175.0 * Math.PI / 180.0)
                 continue;
 
@@ -76,8 +81,8 @@ public static class IntersectionFillet
             if (Math.Abs(tanHalf) < 1e-9)
                 continue;
 
+            // Distance vertex → tangent point along each edge
             var arm = radius / tanHalf;
-            // Keep fillet on each edge (shared with neighbours)
             var maxArm = Math.Min(lenIn, lenOut) * 0.45;
             if (arm > maxArm)
                 arm = maxArm;
@@ -87,87 +92,72 @@ public static class IntersectionFillet
             var pStart = curr - vin * arm;
             var pEnd = curr + vout * arm;
 
-            // Arc middle: from corner into the empty quadrant (outside the solid for a concave vertex)
-            // Bisector of -vin and vout, pointing toward the exterior notch
-            var bis = -vin + vout;
-            bis.Z = 0;
-            if (!bis.Unitize())
-                continue;
-
-            // For concave corner of a CCW polygon the exterior is to the right of vin;
-            // bis as (-vin+vout) points roughly into the notch.
-            var pMid = curr + bis * (radius / Math.Sin(half));
-            // Distance from corner to arc midpoint along bisector is R / sin(half)
-            // Actually standard: center is at distance R/sin(half) from corner along angle bisector
-            // Mid of arc = center - bis * R if bis points from corner toward center...
-            // Simpler: build Arc through three points — pStart, a point on the correct side, pEnd.
-
-            // Point on arc at 50%: offset from chord toward notch
+            // Chord pStart–pEnd; arc must sit on the side TOWARD the centroid
+            // so the sharp tip is cut off (no external lobes).
             var chordMid = (pStart + pEnd) * 0.5;
-            var chordDir = pEnd - pStart; chordDir.Z = 0;
-            var chordLeft = Vector3d.CrossProduct(Vector3d.ZAxis, chordDir);
+            var chord = pEnd - pStart; chord.Z = 0;
+            if (chord.Length < tolerance)
+                continue;
+            var chordLeft = Vector3d.CrossProduct(Vector3d.ZAxis, chord);
             if (!chordLeft.Unitize())
                 continue;
 
-            // Choose side of chord that points away from polygon interior (into notch)
-            // Interior is toward polygon centroid-ish: use curr → centroid of pts
-            var centroid = Point3d.Origin;
-            foreach (var p in pts) centroid += p;
-            centroid /= n;
             var toCentroid = centroid - chordMid; toCentroid.Z = 0;
-            if (chordLeft * toCentroid > 0)
-                chordLeft = -chordLeft; // flip so left points away from centroid = into notch
+            // Point chordLeft toward the centroid (interior)
+            if (chordLeft * toCentroid < 0)
+                chordLeft = -chordLeft;
 
-            var sagitta = radius * (1.0 - Math.Cos(half)); // approx for the arc bulge
-            // More accurate bulge from geometry: distance center-to-chord
-            var distCornerToChord = arm * Math.Sin(half); // not quite
-            // Use: mid = chordMid + chordLeft * (R * (1 - cos(π/2 - half))) 
-            // For unit circle fillet, sagitta = R * (1 - sin(half))? 
-            // Interior angle of polygon at concave vertex is π + turn... keep simple:
-            var bulge = radius * (1.0 - Math.Cos(Math.PI / 2.0 - half));
-            if (bulge < tolerance)
-                bulge = radius * 0.5;
-            pMid = chordMid + chordLeft * Math.Max(bulge, tolerance * 10);
+            // Sagitta for circular arc spanning angle (π - turn) interior reflex...
+            // For the minor arc between tangent points: central angle = π - turn? 
+            // Actually central angle equals turn for the complementary sector.
+            // sagitta = R * (1 - cos(half)) is wrong for 90°; use:
+            //   half-chord = |pEnd-pStart|/2, sagitta = R - sqrt(R² - halfChord²)
+            var halfChord = pStart.DistanceTo(pEnd) * 0.5;
+            if (halfChord >= radius)
+            {
+                // radius too small for this arm — skip
+                continue;
+            }
+            var sagitta = radius - Math.Sqrt(Math.Max(0, radius * radius - halfChord * halfChord));
+            if (sagitta < tolerance)
+                continue;
+
+            var pMid = chordMid + chordLeft * sagitta;
 
             try
             {
                 var arc = new Arc(pStart, pMid, pEnd);
                 if (!arc.IsValid || arc.Length < tolerance * 5)
                     continue;
+                // Reject near-full circles (inverted / long-way arc)
+                if (arc.Angle > Math.PI * 0.95)
+                    continue;
+
                 arcs[i] = arc;
                 armIn[i] = arm;
                 armOut[i] = arm;
             }
             catch
             {
-                // skip this corner
+                // skip corner
             }
         }
 
-        // Assemble: edge segments + arcs
+        // Assemble edges + arcs
         var parts = new List<Curve>();
         for (var i = 0; i < n; i++)
         {
             var j = (i + 1) % n;
             var a = pts[i];
             var b = pts[j];
-
-            // Start of edge: after outgoing fillet at i (if any)
-            var start = arcs[i].HasValue ? pts[i] + (b - a) / (b - a).Length * armOut[i] : a;
-            // End of edge: before incoming fillet at j
-            var end = arcs[j].HasValue
-                ? pts[j] - (b - a) / (b - a).Length * armIn[j]
-                : b;
-
-            // Recompute with unit vector safely
             var edge = b - a; edge.Z = 0;
             var edgeLen = edge.Length;
             if (edgeLen < tolerance)
                 continue;
             edge /= edgeLen;
 
-            start = arcs[i].HasValue ? a + edge * armOut[i] : a;
-            end = arcs[j].HasValue ? b - edge * armIn[j] : b;
+            var start = arcs[i].HasValue ? a + edge * armOut[i] : a;
+            var end = arcs[j].HasValue ? b - edge * armIn[j] : b;
 
             if (start.DistanceTo(end) > tolerance)
                 parts.Add(new LineCurve(start, end));
@@ -194,14 +184,14 @@ public static class IntersectionFillet
     {
         pts = new List<Point3d>();
 
-        if (closed.TryGetPolyline(out Polyline pl) && pl.Count >= 3)
+        Polyline pl;
+        if (closed.TryGetPolyline(out pl) && pl.Count >= 3)
         {
             for (var i = 0; i < pl.Count; i++)
                 pts.Add(pl[i]);
         }
         else
         {
-            // Polyline approximation of polycurve (union result)
             var length = closed.GetLength();
             if (length < tolerance * 10)
                 return false;
@@ -210,7 +200,6 @@ public static class IntersectionFillet
             var polylineCurve = closed.ToPolyline(0, 0, 0.05, maxSeg, 0, tolerance, 0, 0, true);
             if (polylineCurve is null)
                 return false;
-
             if (!polylineCurve.TryGetPolyline(out pl) || pl.Count < 3)
                 return false;
 
@@ -218,11 +207,9 @@ public static class IntersectionFillet
                 pts.Add(pl[i]);
         }
 
-        // Drop duplicate closing vertex
         if (pts.Count > 1 && pts[0].DistanceTo(pts[^1]) <= tolerance * 10)
             pts.RemoveAt(pts.Count - 1);
 
-        // Collapse near-duplicates
         var cleaned = new List<Point3d>();
         foreach (var p in pts)
         {
