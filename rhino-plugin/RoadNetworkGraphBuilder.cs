@@ -2,7 +2,7 @@ using Rhino;
 using Rhino.DocObjects;
 using Rhino.Geometry;
 
-namespace UrbanBridge.Rhino;
+namespace UrbanBridge.Plugin;
 
 /// <summary>
 /// Builds an in-memory road graph from curves on the Roads / Roads::* layers.
@@ -37,7 +37,6 @@ public sealed class RoadNetworkGraphBuilder
         var roadObjects = CollectRoadCurves(document);
         if (roadObjects.Count == 0) return graph;
 
-        // Collect all endpoints in metres together with owning object id and whether start/end.
         var endpoints = new List<(Point3d Pos, Guid ObjectId, bool IsStart)>();
         var curveById = new Dictionary<Guid, (Curve Curve, RhinoObject Obj)>();
 
@@ -55,7 +54,6 @@ public sealed class RoadNetworkGraphBuilder
 
         if (endpoints.Count == 0) return graph;
 
-        // Union-find over endpoints
         var parent = Enumerable.Range(0, endpoints.Count).ToArray();
         int Find(int i)
         {
@@ -82,7 +80,6 @@ public sealed class RoadNetworkGraphBuilder
             }
         }
 
-        // Cluster root -> list of endpoint indices
         var clusters = new Dictionary<int, List<int>>();
         for (var i = 0; i < endpoints.Count; i++)
         {
@@ -95,13 +92,11 @@ public sealed class RoadNetworkGraphBuilder
             list.Add(i);
         }
 
-        // Create nodes with stable IDs
         var endpointIndexToNodeId = new string[endpoints.Count];
         var nodeById = new Dictionary<string, RoadNode>(StringComparer.Ordinal);
 
         foreach (var (_, indices) in clusters)
         {
-            // Representative position = average of cluster points
             var sum = Point3d.Origin;
             foreach (var idx in indices) sum += endpoints[idx].Pos;
             var avg = sum / indices.Count;
@@ -122,7 +117,6 @@ public sealed class RoadNetworkGraphBuilder
                 endpointIndexToNodeId[idx] = nodeId;
         }
 
-        // Create edges
         var edgeStartEnd = new Dictionary<Guid, (string Start, string End)>();
         for (var i = 0; i < endpoints.Count; i++)
         {
@@ -178,7 +172,6 @@ public sealed class RoadNetworkGraphBuilder
             }
         }
 
-        // Assign node types
         foreach (var node in graph.Nodes)
         {
             node.Type = node.Degree switch
@@ -189,7 +182,6 @@ public sealed class RoadNetworkGraphBuilder
             };
         }
 
-        // Connected components (BFS)
         var adjacency = new Dictionary<string, List<string>>(StringComparer.Ordinal);
         foreach (var node in graph.Nodes)
             adjacency[node.Id] = new List<string>();
@@ -220,7 +212,6 @@ public sealed class RoadNetworkGraphBuilder
         }
         graph.Stats.ComponentCount = componentCount == 0 ? 0 : componentCount;
 
-        // Basic stats (full validation & richer stats live in RoadNetworkValidator)
         graph.Stats.TotalLengthM = graph.Edges.Sum(e => e.LengthMeters);
         foreach (var edge in graph.Edges)
         {
@@ -236,7 +227,6 @@ public sealed class RoadNetworkGraphBuilder
 
     private static string MakeStableNodeId(Point3d position)
     {
-        // Round to SnapTolerance grid so IDs stay stable across rebuilds
         const double tol = DefaultSnapToleranceMeters;
         var rx = (int)Math.Round(position.X / tol);
         var ry = (int)Math.Round(position.Y / tol);
