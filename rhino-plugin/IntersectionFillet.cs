@@ -1,6 +1,6 @@
 using Rhino.Geometry;
 
-namespace UrbanBridge.Rhino;
+namespace UrbanBridge.Plugin;
 
 /// <summary>
 /// Pairwise outer-curb fillets at road hubs (geometric, no CreateFilletCurves).
@@ -38,7 +38,6 @@ public static class IntersectionFillet
         if (requested <= 0) return 0;
         var turn = Math.Abs(turnRadians);
         if (turn < 1e-6 || turn > Math.PI - 1e-6) return requested;
-        // Limit radius so tangent points stay within extension of both legs
         var sinHalf = Math.Sin(turn * 0.5);
         if (sinHalf < 1e-6) return requested;
         var maxByAngle = Math.Min(halfA, halfB) / Math.Max(sinHalf, 0.1);
@@ -73,18 +72,16 @@ public static class IntersectionFillet
             var a = legs[i];
             var b = legs[(i + 1) % legs.Count];
             if (!TryCornerGeometry(nodePt, a, b, useOuter, tolerance,
-                    out var pStart, out var pEnd, out var pMid, out var radius))
+                    out var pStart, out var pEnd, out var pMid, out _))
                 continue;
 
-            // Closed pad: tangent points + arc + back along virtual corner
             Arc arc;
             try { arc = new Arc(pStart, pMid, pEnd); }
             catch { continue; }
             if (!arc.IsValid) continue;
 
-            // Virtual corner for the pad tip
             if (!TryVirtualCorner(nodePt, a, b, useOuter, tolerance, out var corner))
-                corner = pMid; // fallback
+                corner = pMid;
 
             var parts = new List<Curve>
             {
@@ -123,7 +120,6 @@ public static class IntersectionFillet
         left.Unitize();
         var half = useOuter ? leg.OuterHalf : leg.RoadHalf;
         half = Math.Max(half, tolerance * 10);
-        // A uses left, B uses right (see TryCornerGeometry)
         var side = isA ? left : -left;
         return nodePt + side * half;
     }
@@ -162,10 +158,7 @@ public static class IntersectionFillet
         halfA = Math.Max(halfA, tolerance * 10);
         halfB = Math.Max(halfB, tolerance * 10);
 
-        // legsCcw are sorted CCW (SortByOutboundAngle), so for a consecutive pair (a, b)
-        // the wedge to fillet lies between a's LEFT curb and b's RIGHT curb —
-        // e.g. East road (a) + North road (b) CCW-adjacent -> NE corner needs
-        // East's north (left) curb + North's east (right) curb, not the mirrored SW pair.
+        // CCW-adjacent pair: a LEFT curb + b RIGHT curb
         var originA = nodePt + leftA * halfA;
         var originB = nodePt + rightB * halfB;
 
@@ -176,55 +169,37 @@ public static class IntersectionFillet
             radius = Math.Max(a.Radius, b.Radius);
         if (radius <= tolerance * 2) return false;
 
-        // CCW turn from A to B
         var crossZ = dirA.X * dirB.Y - dirA.Y * dirB.X;
         var ccwTurn = Math.Atan2(crossZ, dirA * dirB);
         if (ccwTurn < 0) ccwTurn += 2 * Math.PI;
-        // Skip nearly straight or U-turns
         if (ccwTurn < 15.0 * Math.PI / 180.0 || ccwTurn > 165.0 * Math.PI / 180.0)
             return false;
 
         radius = ClampRadius(radius, halfA, halfB, ccwTurn);
         if (radius <= tolerance * 2) return false;
 
-        // Virtual corner: intersection of the two infinite curb lines
         if (!LineLineIntersection(originA, dirA, originB, dirB, out var corner))
             return false;
 
-        // Distance from curb origin along outbound to tangent point
-        // For equal half-widths: arm = radius / tan(turn/2)
-        // General: offset from virtual corner along each curb by radius * tan((pi-turn)/2) wait
-        // Standard fillet: from virtual corner, go back along each ray by radius / tan(halfAngle)
         var halfTurn = ccwTurn * 0.5;
         var tanHalf = Math.Tan(halfTurn);
         if (Math.Abs(tanHalf) < 1e-9) return false;
         var arm = radius / tanHalf;
 
-        // Tangent points: from virtual corner, walk back along each curb direction (toward node side is -dir for outbound curbs)
-        // Curb lines run along dirA / dirB; virtual corner is typically OUT beyond the node for convex outer corners.
-        // Walk from corner toward the node along -dir.
         pStart = corner - dirA * arm;
         pEnd = corner - dirB * arm;
 
-        // Arc midpoint on the angle bisector, radius away from corner
-        var bisector = dirA + dirB;
-        if (!bisector.Unitize())
-        {
-            // 180 deg degenerate
-            bisector = leftA;
-            if (!bisector.Unitize()) return false;
-        }
-        // For outer (convex) corner the arc sits on the side opposite the road centers:
-        // from corner, move along the outward normal of the turn (bisector rotated?)
-        // Virtual corner is outside; arc bows toward the roads = toward node roughly.
         var toNode = nodePt - corner;
         toNode.Z = 0;
-        if (!toNode.Unitize()) toNode = -bisector;
+        if (!toNode.Unitize())
+        {
+            var bisector = dirA + dirB;
+            if (!bisector.Unitize()) return false;
+            toNode = -bisector;
+        }
         pMid = corner + toNode * radius;
 
-        // Sanity: arc length roughly radius * turn
-        var chord = pStart.DistanceTo(pEnd);
-        if (chord < tolerance * 5) return false;
+        if (pStart.DistanceTo(pEnd) < tolerance * 5) return false;
         return true;
     }
 
@@ -235,7 +210,6 @@ public static class IntersectionFillet
         d1.Z = 0; d2.Z = 0;
         if (!d1.Unitize() || !d2.Unitize()) return false;
 
-        // 2D line-line: p1 + s*d1 = p2 + t*d2
         var denom = d1.X * d2.Y - d1.Y * d2.X;
         if (Math.Abs(denom) < 1e-12) return false;
 
