@@ -2,7 +2,7 @@ using Rhino;
 using Rhino.DocObjects;
 using Rhino.Geometry;
 
-namespace UrbanBridge.Rhino;
+namespace UrbanBridge.Plugin;
 
 /// <summary>Init / apply / read zone UserText on selected closed curves.</summary>
 public static class ZoneAttributeHelper
@@ -13,7 +13,6 @@ public static class ZoneAttributeHelper
     public const string KeySetback = "setback_m";
     public const string KeyGreen = "green_ratio";
 
-    /// <summary>Selected curves (prefer closed for zones; still returns open so user sees count).</summary>
     public static List<RhinoObject> GetSelectedCurves(RhinoDoc doc)
     {
         var list = new List<RhinoObject>();

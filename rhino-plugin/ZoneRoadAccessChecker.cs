@@ -2,11 +2,11 @@ using Rhino;
 using Rhino.DocObjects;
 using Rhino.Geometry;
 
-namespace UrbanBridge.Rhino;
+namespace UrbanBridge.Plugin;
 
 /// <summary>
 /// Checks zone boundary proximity to generated roadway surfaces (Stage 2.1).
-/// Sample-based MVP — not exact curve/brep intersection (TZ §5, §10).
+/// Sample-based MVP — not exact curve/brep intersection.
 /// </summary>
 public sealed class ZoneRoadAccessChecker
 {
@@ -30,7 +30,6 @@ public sealed class ZoneRoadAccessChecker
         var roadways = CollectRoadwayBreps(doc);
         if (roadways.Count == 0)
         {
-            // No generated surfaces — every zone is unreachable by definition
             foreach (var zone in analysis.Zones)
             {
                 if (analysis.MetricsById.TryGetValue(zone.RhinoObjectId, out var m))
@@ -59,10 +58,7 @@ public sealed class ZoneRoadAccessChecker
             var step = Math.Max(_sampleStepDoc, _tolerance * 10);
             var points = curve.DivideByLength(step, true);
             if (points is null || points.Length == 0)
-            {
-                // Fallback: endpoints + mid
                 points = new[] { curve.Domain.Min, curve.Domain.Mid, curve.Domain.Max };
-            }
 
             var accessibleSamples = 0;
             var totalSamples = 0;
@@ -118,8 +114,6 @@ public sealed class ZoneRoadAccessChecker
 
     private static bool IsNearRoadway(Point3d pt, List<Brep> roadways, double threshold)
     {
-        // RhinoCommon 8: ClosestPoint requires the full out-parameter signature.
-        // maximumDistance limits the search; success implies a hit within threshold.
         var maxDist = threshold > 0 ? threshold : 1e9;
         foreach (var brep in roadways)
         {
