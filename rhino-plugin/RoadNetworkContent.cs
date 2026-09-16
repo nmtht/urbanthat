@@ -1,86 +1,56 @@
 using Eto.Forms;
 using Rhino;
 
-namespace UrbanBridge.Rhino;
+namespace UrbanBridge.Plugin;
 
-/// <summary>Roads tab: stats, attributes, presets, Generate Road Surfaces.</summary>
+/// <summary>Roads tab: graph stats, issues, Init/Apply road attributes, Generate surfaces.</summary>
 public sealed class RoadNetworkContent : Panel
 {
-    private readonly Label _totalLengthLabel = new() { Text = "Total length: —" };
-    private readonly Label _intersectionsLabel = new() { Text = "Intersections: —" };
-    private readonly Label _deadEndsLabel = new() { Text = "Dead ends: —" };
-    private readonly Label _componentsLabel = new() { Text = "Components: —" };
-    private readonly Label _byClassLabel = new() { Text = "By class: —" };
-    private readonly TextArea _issuesText = new()
-    {
-        ReadOnly = true,
-        Wrap = true,
-        Height = 110,
-        Text = "No issues yet.\nAdd curves on layer Roads.",
-    };
-
+    private readonly Label _summaryLabel = new() { Text = "Road network: —" };
+    private readonly TextArea _issuesText = new() { ReadOnly = true, Wrap = true, Height = 100 };
     private readonly Label _selectionLabel = new() { Text = "Selected curves: 0" };
+    private readonly DropDown _classDrop = new();
+    private readonly TextBox _lanesBox = new() { Text = "2", Width = 60 };
+    private readonly TextBox _widthBox = new() { Text = "8", Width = 60 };
+    private readonly DropDown _dirDrop = new();
+    private readonly TextBox _radiusBox = new() { Text = "4", Width = 60 };
     private readonly DropDown _presetDrop = new();
-    private readonly DropDown _classDropDown = new();
-    private readonly NumericStepper _lanesStepper = new()
-    {
-        MinValue = 0, MaxValue = 16, DecimalPlaces = 0, Value = 2, Width = 80,
-    };
-    private readonly TextBox _widthBox = new() { Text = "8", Width = 80 };
-    private readonly CheckBox _terminalCheck = new() { Text = "is_terminal", Checked = false };
-    private readonly DropDown _directionDrop = new();
-    private readonly TextBox _cornerRadiusBox = new() { Text = "4", Width = 80 };
-    private readonly TextBox _medianBox = new() { Text = "0", Width = 80 };
-    private readonly TextBox _sidewalkGreenBox = new() { Text = "0", Width = 80 };
-    private readonly TextBox _parkingBox = new() { Text = "0", Width = 80 };
-    private readonly Label _generateStatusLabel = new() { Text = "" };
 
     private BridgeServer? _server;
     private readonly object _uiGate = new();
     private System.Threading.Timer? _uiTimer;
-    private RoadNetworkGraph? _pendingGraph;
+    private RoadNetworkGraph? _pending;
 
     public RoadNetworkContent()
     {
-        foreach (var p in RoadAttributeHelper.PresetNames)
-            _presetDrop.Items.Add(p);
-        _presetDrop.SelectedIndex = 1; // residential
-
         foreach (var c in RoadAttributeHelper.RoadClasses)
-            _classDropDown.Items.Add(c);
-        _classDropDown.SelectedIndex = 2;
+            _classDrop.Items.Add(c);
+        _classDrop.SelectedIndex = 2; // local
 
         foreach (var d in RoadAttributeHelper.Directions)
-            _directionDrop.Items.Add(d);
-        _directionDrop.SelectedIndex = 0;
+            _dirDrop.Items.Add(d);
+        _dirDrop.SelectedIndex = 0;
 
-        _classDropDown.SelectedIndexChanged += (_, _) => OnClassChanged();
+        foreach (var p in RoadAttributeHelper.PresetNames)
+            _presetDrop.Items.Add(p);
 
-        var applyPresetBtn = new Button { Text = "Apply preset" };
-        applyPresetBtn.Click += (_, _) => ApplyPreset();
-
-        var initButton = new Button { Text = "Init as road" };
-        initButton.Click += (_, _) => InitSelected();
-
-        var applyButton = new Button { Text = "Apply attributes" };
-        applyButton.Click += (_, _) => ApplySelected();
-
-        var readButton = new Button { Text = "Read from selection" };
-        readButton.Click += (_, _) => ReadSelection();
-
-        var refreshButton = new Button { Text = "Refresh graph" };
-        refreshButton.Click += (_, _) => RebuildGraph();
-
-        var generateButton = new Button { Text = "Generate Road Surfaces" };
-        generateButton.Click += (_, _) => GenerateSurfaces();
+        var initBtn = new Button { Text = "Init as road" };
+        initBtn.Click += (_, _) => InitSelected();
+        var applyBtn = new Button { Text = "Apply attributes" };
+        applyBtn.Click += (_, _) => ApplySelected();
+        var presetBtn = new Button { Text = "Apply preset" };
+        presetBtn.Click += (_, _) => ApplyPreset();
+        var genBtn = new Button { Text = "Generate Road Surfaces" };
+        genBtn.Click += (_, _) => GenerateSurfaces();
+        var refreshBtn = new Button { Text = "Refresh graph" };
+        refreshBtn.Click += (_, _) => RebuildGraph();
 
         var attrGroup = new GroupBox
         {
-            Text = "Attributes",
+            Text = "Attributes (selected curves)",
             Content = new StackLayout
             {
-                Padding = 6,
-                Spacing = 4,
+                Padding = 6, Spacing = 4,
                 HorizontalContentAlignment = HorizontalAlignment.Stretch,
                 Items =
                 {
@@ -90,44 +60,18 @@ public sealed class RoadNetworkContent : Panel
                         Spacing = new Eto.Drawing.Size(6, 4),
                         Rows =
                         {
-                            new TableRow(new Label { Text = "preset" }, _presetDrop),
-                            new TableRow(new Label { Text = "road_class" }, _classDropDown),
-                            new TableRow(new Label { Text = "lanes" }, _lanesStepper),
+                            new TableRow(new Label { Text = "road_class" }, _classDrop),
+                            new TableRow(new Label { Text = "lanes" }, _lanesBox),
                             new TableRow(new Label { Text = "width_m" }, _widthBox),
-                            new TableRow(new Label { Text = "direction" }, _directionDrop),
-                            new TableRow(new Label { Text = "corner_radius_m" }, _cornerRadiusBox),
-                            new TableRow(new Label { Text = "median_width_m" }, _medianBox),
-                            new TableRow(new Label { Text = "sidewalk_green_m" }, _sidewalkGreenBox),
-                            new TableRow(new Label { Text = "parking_width_m" }, _parkingBox),
+                            new TableRow(new Label { Text = "direction" }, _dirDrop),
+                            new TableRow(new Label { Text = "corner_radius_m" }, _radiusBox),
+                            new TableRow(new Label { Text = "preset" }, _presetDrop),
                         },
                     },
-                    _terminalCheck,
                     new StackLayout
                     {
-                        Orientation = Orientation.Horizontal,
-                        Spacing = 6,
-                        Items = { applyPresetBtn, initButton, applyButton },
-                    },
-                    readButton,
-                },
-            },
-        };
-
-        var surfaceGroup = new GroupBox
-        {
-            Text = "Road surfaces",
-            Content = new StackLayout
-            {
-                Padding = 6,
-                Spacing = 4,
-                HorizontalContentAlignment = HorizontalAlignment.Stretch,
-                Items =
-                {
-                    generateButton,
-                    _generateStatusLabel,
-                    new Label
-                    {
-                        Text = "Hubs: external sidewalk fillets · crossings · arrows. Links: parking / greenery strips.",
+                        Orientation = Orientation.Horizontal, Spacing = 6,
+                        Items = { initBtn, applyBtn, presetBtn },
                     },
                 },
             },
@@ -138,22 +82,16 @@ public sealed class RoadNetworkContent : Panel
             Border = BorderType.None,
             Content = new StackLayout
             {
-                Padding = 10,
-                Spacing = 6,
+                Padding = 10, Spacing = 6,
                 HorizontalContentAlignment = HorizontalAlignment.Stretch,
                 Items =
                 {
-                    new Label { Text = "Road Network" },
-                    _totalLengthLabel,
-                    _intersectionsLabel,
-                    _deadEndsLabel,
-                    _componentsLabel,
-                    _byClassLabel,
+                    _summaryLabel,
                     new Label { Text = "Issues" },
                     _issuesText,
                     attrGroup,
-                    surfaceGroup,
-                    refreshButton,
+                    genBtn,
+                    refreshBtn,
                 },
             },
         };
@@ -162,21 +100,21 @@ public sealed class RoadNetworkContent : Panel
     public void AttachServer(BridgeServer? server)
     {
         if (_server is not null)
-            _server.RoadNetworkUpdated -= OnRoadNetworkUpdated;
+            _server.RoadNetworkUpdated -= OnUpdated;
         _server = server;
         if (_server is not null)
         {
-            _server.RoadNetworkUpdated -= OnRoadNetworkUpdated;
-            _server.RoadNetworkUpdated += OnRoadNetworkUpdated;
-            if (_server.LatestRoadNetwork is { } graph)
-                OnRoadNetworkUpdated(graph);
+            _server.RoadNetworkUpdated -= OnUpdated;
+            _server.RoadNetworkUpdated += OnUpdated;
+            if (_server.LatestRoadNetwork is { } g)
+                OnUpdated(g);
         }
     }
 
     public void DetachServer()
     {
         if (_server is not null)
-            _server.RoadNetworkUpdated -= OnRoadNetworkUpdated;
+            _server.RoadNetworkUpdated -= OnUpdated;
         _server = null;
         UiInvoke.DisposeTimer(ref _uiTimer, _uiGate);
     }
@@ -189,17 +127,19 @@ public sealed class RoadNetworkContent : Panel
                 server.RebuildAndSendRoadNetwork(doc);
             else
                 PaintFromCache();
+            RefreshSelectionLabel();
         }
         catch (Exception ex)
         {
-            RhinoApp.WriteLine($"[UrbanBridge] Rebuild error: {ex.Message}");
+            RhinoApp.WriteLine($"[UrbanBridge] Road rebuild: {ex.Message}");
         }
     }
 
     public void PaintFromCache()
     {
-        if (_server?.LatestRoadNetwork is { } graph)
-            ApplyUi(graph);
+        if (_server?.LatestRoadNetwork is { } g)
+            ApplyUi(g);
+        RefreshSelectionLabel();
     }
 
     public void RefreshSelectionLabel()
@@ -209,74 +149,7 @@ public sealed class RoadNetworkContent : Panel
         _selectionLabel.Text = $"Selected curves: {n}";
     }
 
-    private void GenerateSurfaces()
-    {
-        var doc = RhinoDoc.ActiveDoc;
-        if (doc is null)
-        {
-            _generateStatusLabel.Text = "No active document.";
-            return;
-        }
-
-        try
-        {
-            var server = UrbanBridgePlugin.Instance?.Server;
-            server?.RebuildAndSendRoadNetwork(doc);
-
-            var graph = server?.LatestRoadNetwork;
-            if (graph is null || graph.Edges.Count == 0)
-            {
-                _generateStatusLabel.Text = "No road edges.";
-                return;
-            }
-
-            _generateStatusLabel.Text = "Generating…";
-            var result = new RoadSurfaceGenerator(doc).Generate(doc, graph);
-
-            if (server is not null)
-            {
-                server.MarkRoadSurfaceGenerated();
-                server.NotifyRoadNetworkUpdated(graph);
-                server.RebuildZoneAnalysis(doc);
-            }
-            else ApplyUi(graph);
-
-            _generateStatusLabel.Text =
-                $"Done: deleted {result.DeletedCount}, created {result.CreatedCount}" +
-                (result.FailedLinks + result.FailedHubs > 0
-                    ? $", failed L={result.FailedLinks} H={result.FailedHubs}" : "");
-        }
-        catch (Exception ex)
-        {
-            _generateStatusLabel.Text = "Error: " + ex.Message;
-            RhinoApp.WriteLine($"[UrbanBridge] Generate failed: {ex.Message}");
-        }
-    }
-
-    private void OnClassChanged()
-    {
-        var cls = SelectedClass();
-        if (RoadAttributeHelper.ClassDefaults.TryGetValue(cls, out var d))
-        {
-            _lanesStepper.Value = d.Lanes;
-            _widthBox.Text = Format(d.WidthM);
-            _cornerRadiusBox.Text = Format(d.CornerRadiusM);
-        }
-    }
-
-    private string SelectedClass() =>
-        _classDropDown.SelectedIndex >= 0 && _classDropDown.SelectedIndex < RoadAttributeHelper.RoadClasses.Length
-            ? RoadAttributeHelper.RoadClasses[_classDropDown.SelectedIndex] : "local";
-
-    private string SelectedDirection() =>
-        _directionDrop.SelectedIndex >= 0 && _directionDrop.SelectedIndex < RoadAttributeHelper.Directions.Length
-            ? RoadAttributeHelper.Directions[_directionDrop.SelectedIndex] : "two_way";
-
-    private string SelectedPreset() =>
-        _presetDrop.SelectedIndex >= 0 && _presetDrop.SelectedIndex < RoadAttributeHelper.PresetNames.Length
-            ? RoadAttributeHelper.PresetNames[_presetDrop.SelectedIndex] : "residential";
-
-    private void ApplyPreset()
+    private void InitSelected()
     {
         var doc = RhinoDoc.ActiveDoc;
         if (doc is null) return;
@@ -287,27 +160,10 @@ public sealed class RoadNetworkContent : Panel
             RhinoApp.WriteLine("[UrbanBridge] Select curves first.");
             return;
         }
-
-        // Ensure on Roads layer
-        RoadAttributeHelper.InitAsRoad(doc, curves, SelectedClass());
-        var name = SelectedPreset();
-        var n = RoadAttributeHelper.ApplyPreset(doc, curves, name);
-        RhinoApp.WriteLine($"[UrbanBridge] Preset '{name}' applied to {n} curve(s).");
-        RebuildGraph();
-        ReadSelection();
-    }
-
-    private void InitSelected()
-    {
-        var doc = RhinoDoc.ActiveDoc;
-        if (doc is null) return;
-        var curves = RoadAttributeHelper.GetSelectedCurves(doc);
-        RefreshSelectionLabel();
-        if (curves.Count == 0) return;
-        var n = RoadAttributeHelper.InitAsRoad(doc, curves, SelectedClass());
+        var cls = SelectedClass();
+        var n = RoadAttributeHelper.InitAsRoad(doc, curves, cls);
         RhinoApp.WriteLine($"[UrbanBridge] Init as road: {n}");
         RebuildGraph();
-        ReadSelection();
     }
 
     private void ApplySelected()
@@ -316,86 +172,101 @@ public sealed class RoadNetworkContent : Panel
         if (doc is null) return;
         var curves = RoadAttributeHelper.GetSelectedCurves(doc);
         RefreshSelectionLabel();
-        if (curves.Count == 0) return;
-
+        if (curves.Count == 0)
+        {
+            RhinoApp.WriteLine("[UrbanBridge] Select curves first.");
+            return;
+        }
         var cls = SelectedClass();
+        var lanes = int.TryParse(_lanesBox.Text, out var l) ? l : 2;
+        var width = double.TryParse(_widthBox.Text, System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture, out var w) ? w : 8;
+        var dir = _dirDrop.SelectedIndex == 1 ? "one_way" : "two_way";
+        var radius = double.TryParse(_radiusBox.Text, System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture, out var r) ? r : 4;
         var n = RoadAttributeHelper.ApplyAttributes(
-            doc, curves, cls, (int)_lanesStepper.Value,
-            ParseBox(_widthBox, RoadAttributeHelper.ClassDefaults[cls].WidthM),
-            _terminalCheck.Checked == true,
-            SelectedDirection(),
-            ParseBox(_cornerRadiusBox, RoadAttributeHelper.ClassDefaults[cls].CornerRadiusM),
-            ParseBox(_medianBox, 0),
-            ParseBox(_sidewalkGreenBox, 0),
-            ParseBox(_parkingBox, 0));
-        RhinoApp.WriteLine($"[UrbanBridge] Applied attributes to {n}");
+            doc, curves, cls, lanes, width, false, dir, radius, 0, 0, 0);
+        RhinoApp.WriteLine($"[UrbanBridge] Applied road attrs to {n}");
         RebuildGraph();
     }
 
-    private void ReadSelection()
+    private void ApplyPreset()
     {
         var doc = RhinoDoc.ActiveDoc;
         if (doc is null) return;
         var curves = RoadAttributeHelper.GetSelectedCurves(doc);
-        RefreshSelectionLabel();
-        var data = RoadAttributeHelper.ReadFirst(curves);
-        if (data is null) return;
-
-        var (cls, lanes, width, terminal, direction, radius, median, swGreen, parking) = data.Value;
-        var idx = Array.FindIndex(RoadAttributeHelper.RoadClasses, c => c.Equals(cls, StringComparison.OrdinalIgnoreCase));
-        if (idx >= 0) _classDropDown.SelectedIndex = idx;
-        _lanesStepper.Value = lanes;
-        _widthBox.Text = Format(width);
-        _terminalCheck.Checked = terminal;
-        var dIdx = Array.FindIndex(RoadAttributeHelper.Directions, d => d.Equals(direction, StringComparison.OrdinalIgnoreCase));
-        if (dIdx >= 0) _directionDrop.SelectedIndex = dIdx;
-        _cornerRadiusBox.Text = Format(radius);
-        _medianBox.Text = Format(median);
-        _sidewalkGreenBox.Text = Format(swGreen);
-        _parkingBox.Text = Format(parking);
+        if (curves.Count == 0 || _presetDrop.SelectedIndex < 0) return;
+        var name = RoadAttributeHelper.PresetNames[_presetDrop.SelectedIndex];
+        var n = RoadAttributeHelper.ApplyPreset(doc, curves, name);
+        RhinoApp.WriteLine($"[UrbanBridge] Applied preset {name} to {n}");
+        RebuildGraph();
     }
 
-    private void OnRoadNetworkUpdated(RoadNetworkGraph graph)
+    private void GenerateSurfaces()
     {
-        _pendingGraph = graph;
+        try
+        {
+            var doc = RhinoDoc.ActiveDoc;
+            if (doc is null) return;
+            var server = UrbanBridgePlugin.Instance?.Server;
+            if (server is null)
+            {
+                RhinoApp.WriteLine("[UrbanBridge] Server not running.");
+                return;
+            }
+            server.RebuildAndSendRoadNetwork(doc);
+            var graph = server.LatestRoadNetwork;
+            if (graph is null || graph.Edges.Count == 0)
+            {
+                RhinoApp.WriteLine("[UrbanBridge] No road edges. Init curves as roads first.");
+                return;
+            }
+            var gen = new RoadSurfaceGenerator(doc);
+            var result = gen.Generate(doc, graph);
+            server.MarkRoadSurfaceGenerated();
+            RhinoApp.WriteLine(
+                $"[UrbanBridge] Surfaces: created {result.CreatedCount}, deleted {result.DeletedCount}, " +
+                $"failed links {result.FailedLinks}, hubs {result.FailedHubs}");
+            ApplyUi(graph);
+        }
+        catch (Exception ex)
+        {
+            RhinoApp.WriteLine($"[UrbanBridge] Surface gen error: {ex.Message}");
+        }
+    }
+
+    private string SelectedClass()
+    {
+        if (_classDrop.SelectedIndex >= 0 && _classDrop.SelectedIndex < RoadAttributeHelper.RoadClasses.Length)
+            return RoadAttributeHelper.RoadClasses[_classDrop.SelectedIndex];
+        return "local";
+    }
+
+    private void OnUpdated(RoadNetworkGraph graph)
+    {
+        _pending = graph;
         UiInvoke.Coalesce(ref _uiTimer, _uiGate, () =>
         {
-            if (_pendingGraph is { } g) ApplyUi(g);
+            if (_pending is not null) ApplyUi(_pending);
         });
     }
 
     private void ApplyUi(RoadNetworkGraph graph)
     {
-        _totalLengthLabel.Text = $"Total length: {graph.Stats.TotalLengthM:F1} m";
-        _intersectionsLabel.Text = $"Intersections: {graph.Stats.IntersectionCount}";
-        _deadEndsLabel.Text = $"Dead ends: {graph.Stats.DeadEndCount}";
-        _componentsLabel.Text = $"Components: {graph.Stats.ComponentCount}";
-
-        _byClassLabel.Text = graph.Stats.LengthByClass.Count > 0
-            ? "By class: " + string.Join(", ", graph.Stats.LengthByClass.OrderBy(kv => kv.Key)
-                .Select(kv => $"{kv.Key}: {kv.Value:F1} m"))
-            : "By class: —";
+        _summaryLabel.Text =
+            $"Edges: {graph.Edges.Count} · Nodes: {graph.Nodes.Count} · " +
+            $"Length: {graph.Stats.TotalLengthM:F1} m · Components: {graph.Stats.ComponentCount}";
 
         if (graph.Issues.Count == 0)
-        {
-            _issuesText.Text = graph.Edges.Count == 0
-                ? "No edges. Draw curves → Init / Apply preset."
-                : "No issues.";
-        }
+            _issuesText.Text = "No issues.";
         else
         {
-            _issuesText.Text = UiInvoke.FormatCappedLines(
-                graph.Issues.OrderByDescending(i => i.Severity).ThenBy(i => i.Type)
-                    .Select(i => $"[{i.Severity}] {i.Type}: {i.Message}"));
+            var lines = graph.Issues
+                .OrderByDescending(i => i.Severity)
+                .Select(i => $"[{i.Severity}] {i.Type}: {i.Message}");
+            _issuesText.Text = UiInvoke.FormatCappedLines(lines);
         }
 
         RefreshSelectionLabel();
     }
-
-    private static double ParseBox(TextBox box, double fallback) =>
-        double.TryParse(box.Text, System.Globalization.NumberStyles.Float,
-            System.Globalization.CultureInfo.InvariantCulture, out var v) ? v : fallback;
-
-    private static string Format(double v) =>
-        v.ToString(System.Globalization.CultureInfo.InvariantCulture);
 }
