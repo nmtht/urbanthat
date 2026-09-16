@@ -1,16 +1,14 @@
 using Eto.Forms;
 using Rhino;
 
-namespace UrbanBridge.Rhino;
+namespace UrbanBridge.Plugin;
 
-/// <summary>Zoning tab: metrics, issues, Init/Apply attributes.</summary>
 public sealed class ZoneTabContent : Panel
 {
     private readonly Label _summaryLabel = new() { Text = "Zones: —" };
     private readonly Label _staleLabel = new() { Text = "", TextColor = Eto.Drawing.Colors.DarkOrange };
     private readonly TextArea _zonesText = new() { ReadOnly = true, Wrap = true, Height = 120 };
     private readonly TextArea _issuesText = new() { ReadOnly = true, Wrap = true, Height = 100 };
-
     private readonly Label _selectionLabel = new() { Text = "Selected curves: 0" };
     private readonly DropDown _typeDrop = new();
     private readonly TextBox _farBox = new() { Text = "1.5", Width = 80 };
@@ -32,13 +30,10 @@ public sealed class ZoneTabContent : Panel
 
         var initBtn = new Button { Text = "Init as zone (UserText + layer Zones)" };
         initBtn.Click += (_, _) => InitSelected();
-
         var applyBtn = new Button { Text = "Apply attributes to selection" };
         applyBtn.Click += (_, _) => ApplySelected();
-
         var readBtn = new Button { Text = "Read from selection" };
         readBtn.Click += (_, _) => ReadSelection();
-
         var refreshBtn = new Button { Text = "Refresh zones" };
         refreshBtn.Click += (_, _) => Rebuild();
 
@@ -47,8 +42,7 @@ public sealed class ZoneTabContent : Panel
             Text = "Attributes (selected closed curves)",
             Content = new StackLayout
             {
-                Padding = 6,
-                Spacing = 4,
+                Padding = 6, Spacing = 4,
                 HorizontalContentAlignment = HorizontalAlignment.Stretch,
                 Items =
                 {
@@ -67,8 +61,7 @@ public sealed class ZoneTabContent : Panel
                     },
                     new StackLayout
                     {
-                        Orientation = Orientation.Horizontal,
-                        Spacing = 6,
+                        Orientation = Orientation.Horizontal, Spacing = 6,
                         Items = { initBtn, applyBtn },
                     },
                     readBtn,
@@ -81,19 +74,14 @@ public sealed class ZoneTabContent : Panel
             Border = BorderType.None,
             Content = new StackLayout
             {
-                Padding = 10,
-                Spacing = 6,
+                Padding = 10, Spacing = 6,
                 HorizontalContentAlignment = HorizontalAlignment.Stretch,
                 Items =
                 {
-                    _summaryLabel,
-                    _staleLabel,
-                    new Label { Text = "Zones" },
-                    _zonesText,
-                    new Label { Text = "Issues" },
-                    _issuesText,
-                    attrGroup,
-                    refreshBtn,
+                    _summaryLabel, _staleLabel,
+                    new Label { Text = "Zones" }, _zonesText,
+                    new Label { Text = "Issues" }, _issuesText,
+                    attrGroup, refreshBtn,
                 },
             },
         };
@@ -101,22 +89,19 @@ public sealed class ZoneTabContent : Panel
 
     public void AttachServer(BridgeServer? server)
     {
-        if (_server is not null)
-            _server.ZoneAnalysisUpdated -= OnUpdated;
+        if (_server is not null) _server.ZoneAnalysisUpdated -= OnUpdated;
         _server = server;
         if (_server is not null)
         {
             _server.ZoneAnalysisUpdated -= OnUpdated;
             _server.ZoneAnalysisUpdated += OnUpdated;
-            if (_server.LatestZoneAnalysis is { } a)
-                OnUpdated(a);
+            if (_server.LatestZoneAnalysis is { } a) OnUpdated(a);
         }
     }
 
     public void DetachServer()
     {
-        if (_server is not null)
-            _server.ZoneAnalysisUpdated -= OnUpdated;
+        if (_server is not null) _server.ZoneAnalysisUpdated -= OnUpdated;
         _server = null;
         UiInvoke.DisposeTimer(ref _uiTimer, _uiGate);
     }
@@ -127,8 +112,7 @@ public sealed class ZoneTabContent : Panel
         {
             if (RhinoDoc.ActiveDoc is { } doc && UrbanBridgePlugin.Instance?.Server is { } server)
                 server.RebuildZoneAnalysis(doc);
-            else
-                PaintFromCache();
+            else PaintFromCache();
             RefreshSelectionLabel();
         }
         catch (Exception ex)
@@ -139,8 +123,7 @@ public sealed class ZoneTabContent : Panel
 
     public void PaintFromCache()
     {
-        if (_server?.LatestZoneAnalysis is { } a)
-            ApplyUi(a);
+        if (_server?.LatestZoneAnalysis is { } a) ApplyUi(a);
         RefreshSelectionLabel();
     }
 
@@ -179,9 +162,8 @@ public sealed class ZoneTabContent : Panel
             RhinoApp.WriteLine("[UrbanBridge] Select one or more closed curves first.");
             return;
         }
-
         var n = ZoneAttributeHelper.InitAsZone(doc, curves, SelectedType());
-        RhinoApp.WriteLine($"[UrbanBridge] Init as zone: {n} curve(s) → layer Zones + default UserText.");
+        RhinoApp.WriteLine($"[UrbanBridge] Init as zone: {n} curve(s).");
         Rebuild();
         ReadSelection();
     }
@@ -197,15 +179,13 @@ public sealed class ZoneTabContent : Panel
             RhinoApp.WriteLine("[UrbanBridge] Select one or more curves first.");
             return;
         }
-
         var type = SelectedType();
         var far = ParseBox(_farBox, ZoneTypeDefaults.Get(type).Far);
         var height = ParseBox(_heightBox, ZoneTypeDefaults.Get(type).HeightMaxM);
         var setback = ParseBox(_setbackBox, ZoneTypeDefaults.DefaultSetbackM);
         var green = ParseBox(_greenBox, ZoneTypeDefaults.Get(type).GreenRatio);
-
         var n = ZoneAttributeHelper.ApplyAttributes(doc, curves, type, far, height, setback, green);
-        RhinoApp.WriteLine($"[UrbanBridge] Applied zone attrs to {n}: type={type}, far={far}, h={height}, setback={setback}, green={green}");
+        RhinoApp.WriteLine($"[UrbanBridge] Applied zone attrs to {n}");
         Rebuild();
     }
 
@@ -217,7 +197,6 @@ public sealed class ZoneTabContent : Panel
         RefreshSelectionLabel();
         var data = ZoneAttributeHelper.ReadFirst(curves);
         if (data is null) return;
-
         var (type, far, height, setback, green) = data.Value;
         var idx = Array.FindIndex(ZoneTypeDefaults.ZoneTypes, t =>
             t.Equals(type, StringComparison.OrdinalIgnoreCase));
@@ -233,9 +212,7 @@ public sealed class ZoneTabContent : Panel
         _pending = analysis;
         UiInvoke.Coalesce(ref _uiTimer, _uiGate, () =>
         {
-            var data = _pending;
-            if (data is not null)
-                ApplyUi(data);
+            if (_pending is not null) ApplyUi(_pending);
         });
     }
 
@@ -253,9 +230,7 @@ public sealed class ZoneTabContent : Panel
             _staleLabel.Text = "";
 
         if (analysis.Zones.Count == 0)
-        {
             _zonesText.Text = "No closed curves on Zones. Select curves → Init as zone.";
-        }
         else
         {
             var lines = analysis.Zones.Select(z =>
@@ -267,9 +242,7 @@ public sealed class ZoneTabContent : Panel
         }
 
         if (analysis.Issues.Count == 0)
-        {
             _issuesText.Text = "No issues.";
-        }
         else
         {
             var lines = analysis.Issues
