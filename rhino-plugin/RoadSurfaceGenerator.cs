@@ -2,7 +2,7 @@ using Rhino;
 using Rhino.DocObjects;
 using Rhino.Geometry;
 
-namespace UrbanBridge.Rhino;
+namespace UrbanBridge.Plugin;
 
 /// <summary>Road surfaces + pairwise street-corner fillets at hubs.</summary>
 public sealed partial class RoadSurfaceGenerator

@@ -4,7 +4,7 @@ using System.Security.Cryptography;
 using System.Text;
 using Rhino;
 
-namespace UrbanBridge.Rhino;
+namespace UrbanBridge.Plugin;
 
 public sealed partial class BridgeServer : IDisposable
 {
