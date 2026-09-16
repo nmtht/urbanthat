@@ -1,8 +1,8 @@
 using Rhino;
 using Rhino.DocObjects;
-using global::Rhino.Geometry;
+using Rhino.Geometry;
 
-namespace UrbanBridge.Rhino;
+namespace UrbanBridge.Plugin;
 
 public sealed class MassingResult
 {
@@ -172,10 +172,7 @@ public sealed class MassingGenerator
             if (extrude is not null)
                 volume = extrude.ToBrep();
         }
-        catch
-        {
-            volume = null;
-        }
+        catch { volume = null; }
 
         if (volume is null || !volume.IsValid)
         {
@@ -242,10 +239,7 @@ public sealed class MassingGenerator
         {
             offsets = curve.Offset(plane, -setbackDoc, _docTolerance, CurveOffsetCornerStyle.Sharp);
         }
-        catch
-        {
-            return null;
-        }
+        catch { return null; }
 
         if (offsets is null || offsets.Length == 0)
             return null;
@@ -261,10 +255,10 @@ public sealed class MassingGenerator
 
             try
             {
-                var events = global::Rhino.Geometry.Intersect.Intersection.CurveSelf(o, _docTolerance);
+                var events = Rhino.Geometry.Intersect.Intersection.CurveSelf(o, _docTolerance);
                 if (events is { Count: > 0 }) continue;
             }
-            catch { /* keep candidate */ }
+            catch { }
 
             var len = o.GetLength();
             if (len > bestLen)
