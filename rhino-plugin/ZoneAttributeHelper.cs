@@ -12,6 +12,7 @@ public static class ZoneAttributeHelper
     public const string KeyHeight = "height_max";
     public const string KeySetback = "setback_m";
     public const string KeyGreen = "green_ratio";
+    public const string KeyMassingType = "massing_type";
 
     public static List<RhinoObject> GetSelectedCurves(RhinoDoc doc)
     {
@@ -26,11 +27,16 @@ public static class ZoneAttributeHelper
         return list;
     }
 
-    public static int InitAsZone(RhinoDoc doc, IReadOnlyList<RhinoObject> curves, string zoneType = "residential")
+    public static int InitAsZone(
+        RhinoDoc doc,
+        IReadOnlyList<RhinoObject> curves,
+        string zoneType = "residential",
+        string massingType = "solid")
     {
         if (doc is null || curves.Count == 0) return 0;
         if (!ZoneTypeDefaults.IsKnown(zoneType))
             zoneType = "residential";
+        massingType = NormalizeMassing(massingType);
         var defaults = ZoneTypeDefaults.Get(zoneType);
         var layerIndex = EnsureZonesLayer(doc);
         var count = 0;
@@ -57,6 +63,8 @@ public static class ZoneAttributeHelper
                 attrs.SetUserString(KeySetback, Format(ZoneTypeDefaults.DefaultSetbackM));
             if (string.IsNullOrWhiteSpace(strings.Get(KeyGreen)))
                 attrs.SetUserString(KeyGreen, Format(defaults.GreenRatio));
+            if (string.IsNullOrWhiteSpace(strings.Get(KeyMassingType)))
+                attrs.SetUserString(KeyMassingType, massingType);
 
             if (doc.Objects.ModifyAttributes(obj, attrs, true))
                 count++;
@@ -73,12 +81,14 @@ public static class ZoneAttributeHelper
         double far,
         double heightMax,
         double setbackM,
-        double greenRatio)
+        double greenRatio,
+        string massingType = "solid")
     {
         if (doc is null || curves.Count == 0) return 0;
         if (!ZoneTypeDefaults.IsKnown(zoneType))
             zoneType = "residential";
         greenRatio = Math.Clamp(greenRatio, 0, 1);
+        massingType = NormalizeMassing(massingType);
 
         var count = 0;
         foreach (var obj in curves)
@@ -89,6 +99,7 @@ public static class ZoneAttributeHelper
             attrs.SetUserString(KeyHeight, Format(heightMax));
             attrs.SetUserString(KeySetback, Format(setbackM));
             attrs.SetUserString(KeyGreen, Format(greenRatio));
+            attrs.SetUserString(KeyMassingType, massingType);
             if (doc.Objects.ModifyAttributes(obj, attrs, true))
                 count++;
         }
@@ -97,7 +108,7 @@ public static class ZoneAttributeHelper
         return count;
     }
 
-    public static (string Type, double Far, double Height, double Setback, double Green)? ReadFirst(
+    public static (string Type, double Far, double Height, double Setback, double Green, string MassingType)? ReadFirst(
         IReadOnlyList<RhinoObject> curves)
     {
         if (curves.Count == 0) return null;
@@ -115,7 +126,15 @@ public static class ZoneAttributeHelper
         }
 
         return (type, Parse(KeyFar, d.Far), Parse(KeyHeight, d.HeightMaxM),
-            Parse(KeySetback, ZoneTypeDefaults.DefaultSetbackM), Parse(KeyGreen, d.GreenRatio));
+            Parse(KeySetback, ZoneTypeDefaults.DefaultSetbackM), Parse(KeyGreen, d.GreenRatio),
+            NormalizeMassing(strings.Get(KeyMassingType)));
+    }
+
+    public static string NormalizeMassing(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return "solid";
+        var t = raw.Trim().ToLowerInvariant();
+        return MassingGenerator.MassingTypes.Any(x => x == t) ? t : "solid";
     }
 
     public static int EnsureZonesLayer(RhinoDoc doc)

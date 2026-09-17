@@ -81,6 +81,15 @@ public sealed class ZoneAnalysisService
                 System.Globalization.CultureInfo.InvariantCulture, out var v) ? v : fallback;
         }
 
+        var massingRaw = strings.Get(ZoneAttributeHelper.KeyMassingType);
+        var massingType = "solid";
+        if (!string.IsNullOrWhiteSpace(massingRaw))
+        {
+            var m = massingRaw!.Trim().ToLowerInvariant();
+            if (MassingGenerator.MassingTypes.Any(t => t == m))
+                massingType = m;
+        }
+
         return new ZoneRecord
         {
             RhinoObjectId = obj.Id,
@@ -90,6 +99,7 @@ public sealed class ZoneAnalysisService
             HeightMax = Parse("height_max", defaults.HeightMaxM),
             SetbackM = Parse("setback_m", ZoneTypeDefaults.DefaultSetbackM),
             GreenRatio = Math.Clamp(Parse("green_ratio", defaults.GreenRatio), 0, 1),
+            MassingType = massingType,
             ZoneTypeWasMissing = missing,
         };
     }

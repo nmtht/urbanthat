@@ -21,6 +21,8 @@ public sealed class ZoneRecord
     public double HeightMax { get; init; }
     public double SetbackM { get; init; }
     public double GreenRatio { get; init; }
+    /// <summary>solid | perimeter | point | random | row</summary>
+    public string MassingType { get; init; } = "solid";
     public bool ZoneTypeWasMissing { get; init; }
 }
 
@@ -31,7 +33,6 @@ public sealed class ZoneMetrics
     public double GreenAreaSqm { get; set; }
     public double EstimatedPopulation { get; set; }
     public double EstimatedJobs { get; set; }
-    /// <summary>Estimated frontage (m) within road-access threshold — sample-based MVP.</summary>
     public double RoadFrontageM { get; set; }
 }
 
@@ -44,7 +45,6 @@ public sealed class ZoneIssue
     public Guid? RelatedZoneId2 { get; init; }
 }
 
-/// <summary>Full analysis snapshot for the Zones layers.</summary>
 public sealed class ZoneAnalysis
 {
     public List<ZoneRecord> Zones { get; } = new();
@@ -57,9 +57,7 @@ public sealed class ZoneAnalysis
     public double TotalGreenAreaSqm { get; set; }
     public Dictionary<string, double> AreaByType { get; } = new(StringComparer.OrdinalIgnoreCase);
 
-    /// <summary>True when road surfaces may be older than the last road-centerline edit.</summary>
     public bool RoadSurfacesStale { get; set; }
-
     public DateTime? LastRoadGraphChangeUtc { get; set; }
     public DateTime? LastRoadSurfaceGenUtc { get; set; }
 }
