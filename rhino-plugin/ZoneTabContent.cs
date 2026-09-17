@@ -7,10 +7,11 @@ public sealed class ZoneTabContent : Panel
 {
     private readonly Label _summaryLabel = new() { Text = "Zones: —" };
     private readonly Label _staleLabel = new() { Text = "", TextColor = Eto.Drawing.Colors.DarkOrange };
-    private readonly TextArea _zonesText = new() { ReadOnly = true, Wrap = true, Height = 120 };
-    private readonly TextArea _issuesText = new() { ReadOnly = true, Wrap = true, Height = 100 };
+    private readonly TextArea _zonesText = new() { ReadOnly = true, Wrap = true, Height = 100 };
+    private readonly TextArea _issuesText = new() { ReadOnly = true, Wrap = true, Height = 80 };
     private readonly Label _selectionLabel = new() { Text = "Selected curves: 0" };
     private readonly DropDown _typeDrop = new();
+    private readonly DropDown _massingDrop = new();
     private readonly TextBox _farBox = new() { Text = "1.5", Width = 80 };
     private readonly TextBox _heightBox = new() { Text = "24", Width = 80 };
     private readonly TextBox _setbackBox = new() { Text = "3", Width = 80 };
@@ -28,14 +29,22 @@ public sealed class ZoneTabContent : Panel
         _typeDrop.SelectedIndex = 0;
         _typeDrop.SelectedIndexChanged += (_, _) => OnTypeChanged();
 
-        var initBtn = new Button { Text = "Init as zone (UserText + layer Zones)" };
+        foreach (var m in MassingGenerator.MassingTypes)
+            _massingDrop.Items.Add(m);
+        _massingDrop.SelectedIndex = 0;
+
+        var initBtn = new Button { Text = "Init as zone" };
         initBtn.Click += (_, _) => InitSelected();
-        var applyBtn = new Button { Text = "Apply attributes to selection" };
+        var applyBtn = new Button { Text = "Apply attributes" };
         applyBtn.Click += (_, _) => ApplySelected();
         var readBtn = new Button { Text = "Read from selection" };
         readBtn.Click += (_, _) => ReadSelection();
         var refreshBtn = new Button { Text = "Refresh zones" };
         refreshBtn.Click += (_, _) => Rebuild();
+        var proxyBtn = new Button { Text = "Regenerate zone proxies" };
+        proxyBtn.Click += (_, _) => RegenerateProxies();
+        var massingBtn = new Button { Text = "Generate massing" };
+        massingBtn.Click += (_, _) => GenerateMassing();
 
         var attrGroup = new GroupBox
         {
@@ -53,6 +62,7 @@ public sealed class ZoneTabContent : Panel
                         Rows =
                         {
                             new TableRow(new Label { Text = "zone_type" }, _typeDrop),
+                            new TableRow(new Label { Text = "massing_type" }, _massingDrop),
                             new TableRow(new Label { Text = "far" }, _farBox),
                             new TableRow(new Label { Text = "height_max (m)" }, _heightBox),
                             new TableRow(new Label { Text = "setback_m" }, _setbackBox),
@@ -69,6 +79,27 @@ public sealed class ZoneTabContent : Panel
             },
         };
 
+        var genGroup = new GroupBox
+        {
+            Text = "Generate",
+            Content = new StackLayout
+            {
+                Padding = 6, Spacing = 4,
+                HorizontalContentAlignment = HorizontalAlignment.Stretch,
+                Items =
+                {
+                    proxyBtn,
+                    massingBtn,
+                    new Label
+                    {
+                        Text = "Proxies: plane by zone_type color, clipped by Roadway.\n" +
+                               "Massing: solid / perimeter / point / random / row; 1 box = 1 floor.",
+                        TextColor = Eto.Drawing.Colors.Gray,
+                    },
+                },
+            },
+        };
+
         Content = new Scrollable
         {
             Border = BorderType.None,
@@ -81,7 +112,7 @@ public sealed class ZoneTabContent : Panel
                     _summaryLabel, _staleLabel,
                     new Label { Text = "Zones" }, _zonesText,
                     new Label { Text = "Issues" }, _issuesText,
-                    attrGroup, refreshBtn,
+                    attrGroup, genGroup, refreshBtn,
                 },
             },
         };
@@ -151,6 +182,13 @@ public sealed class ZoneTabContent : Panel
         return "residential";
     }
 
+    private string SelectedMassing()
+    {
+        if (_massingDrop.SelectedIndex >= 0 && _massingDrop.SelectedIndex < MassingGenerator.MassingTypes.Length)
+            return MassingGenerator.MassingTypes[_massingDrop.SelectedIndex];
+        return "solid";
+    }
+
     private void InitSelected()
     {
         var doc = RhinoDoc.ActiveDoc;
@@ -162,9 +200,11 @@ public sealed class ZoneTabContent : Panel
             RhinoApp.WriteLine("[UrbanBridge] Select one or more closed curves first.");
             return;
         }
-        var n = ZoneAttributeHelper.InitAsZone(doc, curves, SelectedType());
+
+        var n = ZoneAttributeHelper.InitAsZone(doc, curves, SelectedType(), SelectedMassing());
         RhinoApp.WriteLine($"[UrbanBridge] Init as zone: {n} curve(s).");
         Rebuild();
+        RegenerateProxies();
         ReadSelection();
     }
 
@@ -179,14 +219,17 @@ public sealed class ZoneTabContent : Panel
             RhinoApp.WriteLine("[UrbanBridge] Select one or more curves first.");
             return;
         }
+
         var type = SelectedType();
         var far = ParseBox(_farBox, ZoneTypeDefaults.Get(type).Far);
         var height = ParseBox(_heightBox, ZoneTypeDefaults.Get(type).HeightMaxM);
         var setback = ParseBox(_setbackBox, ZoneTypeDefaults.DefaultSetbackM);
         var green = ParseBox(_greenBox, ZoneTypeDefaults.Get(type).GreenRatio);
-        var n = ZoneAttributeHelper.ApplyAttributes(doc, curves, type, far, height, setback, green);
+        var n = ZoneAttributeHelper.ApplyAttributes(
+            doc, curves, type, far, height, setback, green, SelectedMassing());
         RhinoApp.WriteLine($"[UrbanBridge] Applied zone attrs to {n}");
         Rebuild();
+        RegenerateProxies();
     }
 
     private void ReadSelection()
@@ -197,14 +240,80 @@ public sealed class ZoneTabContent : Panel
         RefreshSelectionLabel();
         var data = ZoneAttributeHelper.ReadFirst(curves);
         if (data is null) return;
-        var (type, far, height, setback, green) = data.Value;
+
+        var (type, far, height, setback, green, massing) = data.Value;
         var idx = Array.FindIndex(ZoneTypeDefaults.ZoneTypes, t =>
             t.Equals(type, StringComparison.OrdinalIgnoreCase));
         if (idx >= 0) _typeDrop.SelectedIndex = idx;
+
+        var midx = Array.FindIndex(MassingGenerator.MassingTypes, t =>
+            t.Equals(massing, StringComparison.OrdinalIgnoreCase));
+        if (midx >= 0) _massingDrop.SelectedIndex = midx;
+
         _farBox.Text = Format(far);
         _heightBox.Text = Format(height);
         _setbackBox.Text = Format(setback);
         _greenBox.Text = Format(green);
+    }
+
+    private void RegenerateProxies()
+    {
+        try
+        {
+            var doc = RhinoDoc.ActiveDoc;
+            if (doc is null) return;
+            var server = UrbanBridgePlugin.Instance?.Server;
+            if (server is null) return;
+
+            server.RebuildZoneAnalysis(doc);
+            var analysis = server.LatestZoneAnalysis;
+            if (analysis is null || analysis.Zones.Count == 0)
+            {
+                RhinoApp.WriteLine("[UrbanBridge] No zones for proxies.");
+                return;
+            }
+
+            var n = new ZoneProxyGenerator(doc).RegenerateAll(doc, analysis);
+            RhinoApp.WriteLine($"[UrbanBridge] Zone proxies: {n} piece(s).");
+        }
+        catch (Exception ex)
+        {
+            RhinoApp.WriteLine($"[UrbanBridge] Proxy regen failed: {ex.Message}");
+        }
+    }
+
+    private void GenerateMassing()
+    {
+        try
+        {
+            var doc = RhinoDoc.ActiveDoc;
+            if (doc is null) return;
+            var server = UrbanBridgePlugin.Instance?.Server;
+            if (server is null)
+            {
+                RhinoApp.WriteLine("[UrbanBridge] Plugin server not running.");
+                return;
+            }
+
+            server.RebuildZoneAnalysis(doc);
+            var analysis = server.LatestZoneAnalysis;
+            if (analysis is null || analysis.Zones.Count == 0)
+            {
+                RhinoApp.WriteLine("[UrbanBridge] No zones. Init closed curves as zones first.");
+                return;
+            }
+
+            var batch = new MassingGenerator(doc).Generate(doc, analysis);
+            server.LatestMassingBuiltGfaSqm = batch.TotalBuiltFloorAreaSqm;
+            RhinoApp.WriteLine(
+                $"[UrbanBridge] Massing: created {batch.CreatedCount}, deleted {batch.DeletedCount}, " +
+                $"GFA {batch.TotalBuiltFloorAreaSqm:F0} m²");
+            PaintFromCache();
+        }
+        catch (Exception ex)
+        {
+            RhinoApp.WriteLine($"[UrbanBridge] Massing failed: {ex.Message}");
+        }
     }
 
     private void OnUpdated(ZoneAnalysis analysis)
@@ -225,7 +334,7 @@ public sealed class ZoneTabContent : Panel
         if (analysis.RoadSurfacesStale)
             _staleLabel.Text = "⚠ Road surfaces may be outdated — re-run Generate Road Surfaces.";
         else if (analysis.LastRoadSurfaceGenUtc is null)
-            _staleLabel.Text = "Road surfaces not generated yet (needed for zone_no_road_access).";
+            _staleLabel.Text = "Road surfaces not generated yet (needed for proxy clip / road access).";
         else
             _staleLabel.Text = "";
 
@@ -236,7 +345,7 @@ public sealed class ZoneTabContent : Panel
             var lines = analysis.Zones.Select(z =>
             {
                 analysis.MetricsById.TryGetValue(z.RhinoObjectId, out var m);
-                return $"{z.ZoneType,-12} {(m?.AreaSqm ?? 0),8:F0} m²  build {(m?.BuildableAreaSqm ?? 0),8:F0}  pop {(m?.EstimatedPopulation ?? 0),6:F0}  front {(m?.RoadFrontageM ?? 0),5:F0} m";
+                return $"{z.ZoneType,-12} {z.MassingType,-10} {(m?.AreaSqm ?? 0),8:F0} m²  FAR {z.Far:F1}";
             });
             _zonesText.Text = UiInvoke.FormatCappedLines(lines, 50);
         }
