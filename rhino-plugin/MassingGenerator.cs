@@ -9,11 +9,14 @@ public sealed class MassingResult
     public Guid SourceZoneId { get; init; }
     public string MassingType { get; init; } = "solid";
     public int Floors { get; init; }
+    public int FloorsMin { get; init; }
+    public int FloorsMax { get; init; }
     public double HeightM { get; init; }
     public double FarActual { get; init; }
     public double FarTarget { get; init; }
     public double FootprintAreaSqm { get; init; }
     public int VolumeCount { get; init; }
+    public int BuildingCount { get; init; }
 }
 
 public enum MassingIssueType
@@ -22,6 +25,10 @@ public enum MassingIssueType
     FarNotAchievableWithinHeightLimit,
     ZoneTooSmall,
     SkippedGreenOrPublic,
+    PerimeterBooleanFailed,
+    PointMassingNotFeasible,
+    MassingClamped,
+    FootprintRejected,
 }
 
 public sealed class MassingIssue
@@ -42,17 +49,22 @@ public sealed class MassingBatchResult
 }
 
 /// <summary>
-/// Massing by massing_type: solid | perimeter | point | random | row.
-/// One Brep per floor slab (floor_index 1..N).
+/// Massing 2.4: solid | perimeter | point | random | row.
+/// One Brep per floor; z0 from zone boundary; limits + height/rotation jitter.
 /// </summary>
 public sealed class MassingGenerator
 {
     public const string LayerMassing = "Buildings::Massing";
     public const double FloorHeightM = 3.3;
+
     public const double DefaultBlockDepthM = 14.0;
     public const double DefaultPadSizeM = 18.0;
     public const double DefaultMinGapM = 8.0;
-    public const double DefaultCoverage = 0.40;
+    public const double DefaultCoverageMax = 0.40;
+    public const int DefaultMaxBuildings = 10;
+    public const double DefaultMaxBarLengthM = 48.0;
+    public const double DefaultHeightJitter = 0.35;
+    public const double DefaultRotationJitterDeg = 25.0;
 
     public static readonly string[] MassingTypes =
     {
@@ -62,6 +74,12 @@ public sealed class MassingGenerator
     private readonly double _docTolerance;
     private readonly double _metersToDoc;
     private readonly double _docToMeters;
+
+    private sealed class FootprintPad
+    {
+        public required Curve Curve;
+        public double AreaSqm;
+    }
 
     public MassingGenerator(RhinoDoc doc)
     {
@@ -84,7 +102,9 @@ public sealed class MassingGenerator
                 if (result is null) continue;
                 batch.Buildings.Add(result);
                 batch.CreatedCount += result.VolumeCount;
-                batch.TotalBuiltFloorAreaSqm += result.Floors * result.FootprintAreaSqm;
+                batch.TotalBuiltFloorAreaSqm += result.FarActual * (analysis.MetricsById.TryGetValue(zone.RhinoObjectId, out var m) ? m.AreaSqm : result.FootprintAreaSqm);
+                // GFA = floors-weighted footprint sum already in FarActual * zone area; prefer explicit:
+                batch.TotalBuiltFloorAreaSqm = batch.Buildings.Sum(b => b.FootprintAreaSqm * ((b.FloorsMin + b.FloorsMax) / 2.0)); // refined below
             }
             catch (Exception ex)
             {
@@ -98,6 +118,11 @@ public sealed class MassingGenerator
             }
         }
 
+        // Recompute GFA from actual results stored during generate
+        batch.TotalBuiltFloorAreaSqm = 0;
+        foreach (var b in batch.Buildings)
+            batch.TotalBuiltFloorAreaSqm += b.FootprintAreaSqm * b.Floors; // Floors = average-ish; see GenerateOne
+
         doc.Views.Redraw();
         return batch;
     }
@@ -107,26 +132,21 @@ public sealed class MassingGenerator
         var ztype = zone.ZoneType?.ToLowerInvariant() ?? "";
         if (ztype is "green" or "public")
         {
-            analysis.Issues.Add(new ZoneIssue
-            {
-                Type = ZoneIssueType.MissingAttributes,
-                Severity = IssueSeverity.Info,
-                Message = $"Massing skipped for {ztype} zone (no buildings).",
-                RelatedZoneId = zone.RhinoObjectId,
-            });
+            AddIssue(analysis, zone, MassingIssueType.SkippedGreenOrPublic, IssueSeverity.Info,
+                $"Massing skipped for {ztype} zone.");
             return null;
         }
 
         analysis.MetricsById.TryGetValue(zone.RhinoObjectId, out var metrics);
         var zoneAreaSqm = metrics?.AreaSqm ?? 0;
-        var targetFloorArea = metrics?.BuildableAreaSqm ?? (zoneAreaSqm * zone.Far);
+        var targetGfa = metrics?.BuildableAreaSqm ?? (zoneAreaSqm * zone.Far);
         if (zoneAreaSqm <= 1e-6)
         {
-            AddIssue(analysis, zone, MassingIssueType.ZoneTooSmall, IssueSeverity.Error,
-                "Zone area is zero — cannot generate massing.");
+            AddIssue(analysis, zone, MassingIssueType.ZoneTooSmall, IssueSeverity.Error, "Zone area is zero.");
             return null;
         }
 
+        var z0 = zone.Boundary.GetBoundingBox(true).Min.Z;
         var setbackDoc = Math.Max(0, zone.SetbackM) * _metersToDoc;
         var envelope = BuildEnvelope(zone.Boundary, setbackDoc);
         if (envelope is null)
@@ -136,32 +156,23 @@ public sealed class MassingGenerator
             return null;
         }
 
+        // Lift envelope to zone plane
+        AlignCurveToZ(envelope, z0);
+
         var massingType = NormalizeMassingType(zone.MassingType);
-        var footprints = BuildFootprints(envelope, massingType);
-        if (footprints.Count == 0)
-        {
-            AddIssue(analysis, zone, MassingIssueType.EnvelopeGenerationFailed, IssueSeverity.Error,
-                $"No footprints for massing_type={massingType}.");
+        var seed = StableSeed(zone.RhinoObjectId);
+        var rng = new Random(seed);
+
+        var pads = BuildPads(envelope, massingType, zone, analysis, rng);
+        if (pads is null || pads.Count == 0)
             return null;
-        }
 
-        var footprintAreaSqm = 0.0;
-        foreach (var fp in footprints)
-        {
-            var amp = AreaMassProperties.Compute(fp);
-            if (amp is not null)
-                footprintAreaSqm += amp.Area * _docToMeters * _docToMeters;
-        }
-
+        var footprintAreaSqm = pads.Sum(p => p.AreaSqm);
         if (footprintAreaSqm <= 1e-6)
         {
-            AddIssue(analysis, zone, MassingIssueType.ZoneTooSmall, IssueSeverity.Error,
-                "Footprint area too small.");
+            AddIssue(analysis, zone, MassingIssueType.ZoneTooSmall, IssueSeverity.Error, "Footprint area too small.");
             return null;
         }
-
-        var floors = (int)Math.Ceiling(targetFloorArea / footprintAreaSqm);
-        if (floors < 1) floors = 1;
 
         var maxFloorsByHeight = (int)Math.Floor(zone.HeightMax / FloorHeightM);
         if (maxFloorsByHeight < 1)
@@ -171,29 +182,68 @@ public sealed class MassingGenerator
             return null;
         }
 
-        if (floors > maxFloorsByHeight)
+        var baseFloors = (int)Math.Ceiling(targetGfa / footprintAreaSqm);
+        if (baseFloors < 1) baseFloors = 1;
+        if (baseFloors > maxFloorsByHeight)
         {
-            floors = maxFloorsByHeight;
+            baseFloors = maxFloorsByHeight;
             AddIssue(analysis, zone, MassingIssueType.FarNotAchievableWithinHeightLimit, IssueSeverity.Warning,
-                $"FAR {zone.Far:F2} not achievable within height_max; clamped to {floors} floors.");
+                $"FAR {zone.Far:F2} not achievable within height_max; base floors={baseFloors}.");
+        }
+
+        // Per-pad floor counts with height jitter (point/solid: no jitter)
+        var jitter = massingType is "random" or "row" or "perimeter" ? DefaultHeightJitter : 0.0;
+        if (massingType == "point") jitter = 0.0;
+
+        var floorCounts = new int[pads.Count];
+        var totalGfa = 0.0;
+        for (var i = 0; i < pads.Count; i++)
+        {
+            var u = jitter > 0 ? (rng.NextDouble() * 2 - 1) * jitter : 0.0;
+            var f = (int)Math.Round(baseFloors * (1.0 + u));
+            f = Math.Clamp(f, 1, maxFloorsByHeight);
+            floorCounts[i] = f;
+            totalGfa += pads[i].AreaSqm * f;
+        }
+
+        // Trim GFA if overshoot target significantly (>15%)
+        if (targetGfa > 0 && totalGfa > targetGfa * 1.15)
+        {
+            // Reduce tallest pads first
+            while (totalGfa > targetGfa * 1.05)
+            {
+                var hi = 0;
+                for (var i = 1; i < floorCounts.Length; i++)
+                    if (floorCounts[i] > floorCounts[hi]) hi = i;
+                if (floorCounts[hi] <= 1) break;
+                floorCounts[hi]--;
+                totalGfa -= pads[hi].AreaSqm;
+            }
         }
 
         var floorHeightDoc = FloorHeightM * _metersToDoc;
-        var farActual = (floors * footprintAreaSqm) / zoneAreaSqm;
+        var farActual = totalGfa / zoneAreaSqm;
         var layerIndex = EnsureLayer(doc, LayerMassing, System.Drawing.Color.FromArgb(160, 160, 170));
         var volumeCount = 0;
+        var floorsMin = floorCounts.Min();
+        var floorsMax = floorCounts.Max();
+        var avgFloors = floorCounts.Average();
 
-        foreach (var fp in footprints)
+        for (var i = 0; i < pads.Count; i++)
         {
-            for (var f = 0; f < floors; f++)
+            var fp = pads[i].Curve;
+            AlignCurveToZ(fp, z0);
+            var nFloors = floorCounts[i];
+            for (var f = 0; f < nFloors; f++)
             {
-                var slab = ExtrudeFloor(fp, floorHeightDoc, f * floorHeightDoc);
+                var baseZ = z0 + f * floorHeightDoc;
+                var slab = ExtrudeFloor(fp, floorHeightDoc, baseZ);
                 if (slab is null || !slab.IsValid) continue;
 
                 var attrs = new ObjectAttributes { LayerIndex = layerIndex };
                 attrs.SetUserString(MassingCleanup.GeneratedByKey, MassingCleanup.GeneratedByValue);
                 attrs.SetUserString(MassingCleanup.SourceZoneKey, zone.RhinoObjectId.ToString());
-                attrs.SetUserString(MassingCleanup.FloorsKey, floors.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                attrs.SetUserString(MassingCleanup.FloorsKey, nFloors.ToString(System.Globalization.CultureInfo.InvariantCulture));
                 attrs.SetUserString(MassingCleanup.FloorIndexKey, (f + 1).ToString(System.Globalization.CultureInfo.InvariantCulture));
                 attrs.SetUserString(MassingCleanup.MassingTypeKey, massingType);
                 attrs.SetUserString(MassingCleanup.FarActualKey,
@@ -206,17 +256,288 @@ public sealed class MassingGenerator
             }
         }
 
+        RhinoApp.WriteLine(
+            $"[UrbanBridge] Massing {massingType}: zone {zone.RhinoObjectId.ToString()[..8]}… " +
+            $"{pads.Count} building(s), floors {floorsMin}–{floorsMax}, slabs {volumeCount}");
+
         return new MassingResult
         {
             SourceZoneId = zone.RhinoObjectId,
             MassingType = massingType,
-            Floors = floors,
-            HeightM = floors * FloorHeightM,
+            Floors = (int)Math.Round(avgFloors),
+            FloorsMin = floorsMin,
+            FloorsMax = floorsMax,
+            HeightM = floorsMax * FloorHeightM,
             FarActual = farActual,
             FarTarget = zone.Far,
             FootprintAreaSqm = footprintAreaSqm,
             VolumeCount = volumeCount,
+            BuildingCount = pads.Count,
         };
+    }
+
+    private List<FootprintPad>? BuildPads(
+        Curve envelope, string massingType, ZoneRecord zone, ZoneAnalysis analysis, Random rng)
+    {
+        return massingType switch
+        {
+            "perimeter" => BuildPerimeter(envelope, zone, analysis),
+            "point" => BuildPointSingle(envelope, zone, analysis),
+            "random" => BuildRandom(envelope, zone, analysis, rng),
+            "row" => BuildRows(envelope, zone, analysis, rng),
+            _ => CurveToPads(new[] { envelope.DuplicateCurve()! }),
+        };
+    }
+
+    private List<FootprintPad>? BuildPerimeter(Curve envelope, ZoneRecord zone, ZoneAnalysis analysis)
+    {
+        var depthDoc = DefaultBlockDepthM * _metersToDoc;
+        var inner = BuildEnvelope(envelope, depthDoc);
+        if (inner is null)
+        {
+            AddIssue(analysis, zone, MassingIssueType.PerimeterBooleanFailed, IssueSeverity.Warning,
+                "Perimeter inner offset failed — no massing for this zone.");
+            return null;
+        }
+
+        try
+        {
+            var diff = Curve.CreateBooleanDifference(envelope, inner, _docTolerance);
+            if (diff is { Length: > 0 })
+            {
+                var pads = CurveToPads(diff);
+                if (pads.Count > 0) return pads;
+            }
+        }
+        catch { }
+
+        AddIssue(analysis, zone, MassingIssueType.PerimeterBooleanFailed, IssueSeverity.Warning,
+            "Perimeter boolean difference failed — no silent solid fallback.");
+        return null;
+    }
+
+    private List<FootprintPad>? BuildPointSingle(Curve envelope, ZoneRecord zone, ZoneAnalysis analysis)
+    {
+        var bbox = envelope.GetBoundingBox(true);
+        var pad = DefaultPadSizeM * _metersToDoc;
+        // Fit pad inside envelope: clamp to 40% of shorter side
+        var shortSide = Math.Min(bbox.Max.X - bbox.Min.X, bbox.Max.Y - bbox.Min.Y);
+        if (pad > shortSide * 0.5)
+            pad = shortSide * 0.4;
+
+        if (pad < _docTolerance * 50)
+        {
+            AddIssue(analysis, zone, MassingIssueType.PointMassingNotFeasible, IssueSeverity.Warning,
+                "Point massing: envelope too small for a tower pad.");
+            return null;
+        }
+
+        var center = bbox.Center;
+        center.Z = bbox.Min.Z;
+        if (envelope.Contains(center, Plane.WorldXY, _docTolerance) != PointContainment.Inside)
+        {
+            // fallback: try bbox center projections
+            AddIssue(analysis, zone, MassingIssueType.PointMassingNotFeasible, IssueSeverity.Warning,
+                "Point massing: centroid not inside setback envelope.");
+            return null;
+        }
+
+        var half = pad * 0.5;
+        var sq = MakeRect(center.X, center.Y, center.Z, half, half, 0);
+        var pads = CurveToPads(new[] { sq });
+        if (pads.Count == 0)
+        {
+            AddIssue(analysis, zone, MassingIssueType.PointMassingNotFeasible, IssueSeverity.Warning,
+                "Point massing: footprint area is zero.");
+            return null;
+        }
+        return pads;
+    }
+
+    private List<FootprintPad>? BuildRandom(
+        Curve envelope, ZoneRecord zone, ZoneAnalysis analysis, Random rng)
+    {
+        var bbox = envelope.GetBoundingBox(true);
+        var gap = DefaultMinGapM * _metersToDoc;
+        var amp = AreaMassProperties.Compute(envelope);
+        var envArea = amp?.Area ?? 0;
+        var envAreaSqm = envArea * _docToMeters * _docToMeters;
+
+        var maxByCoverage = envAreaSqm > 0
+            ? Math.Max(1, (int)(envAreaSqm * DefaultCoverageMax / (DefaultPadSizeM * DefaultPadSizeM)))
+            : DefaultMaxBuildings;
+        var maxPads = Math.Min(DefaultMaxBuildings, maxByCoverage);
+
+        var candidates = new List<Curve>();
+        var attempts = maxPads * 20;
+        for (var a = 0; a < attempts && candidates.Count < maxPads; a++)
+        {
+            var sizeScale = 0.7 + rng.NextDouble() * 0.5; // 0.7..1.2
+            var pad = DefaultPadSizeM * _metersToDoc * sizeScale;
+            var half = pad * 0.5;
+            var cx = bbox.Min.X + half + rng.NextDouble() * Math.Max(_docTolerance, bbox.Max.X - bbox.Min.X - pad);
+            var cy = bbox.Min.Y + half + rng.NextDouble() * Math.Max(_docTolerance, bbox.Max.Y - bbox.Min.Y - pad);
+            var center = new Point3d(cx, cy, bbox.Min.Z);
+            if (envelope.Contains(center, Plane.WorldXY, _docTolerance) != PointContainment.Inside)
+                continue;
+
+            var rot = (rng.NextDouble() * 2 - 1) * DefaultRotationJitterDeg * (Math.PI / 180.0);
+            var sq = MakeRect(cx, cy, bbox.Min.Z, half, half, rot);
+
+            // min gap vs existing
+            var ok = true;
+            foreach (var existing in candidates)
+            {
+                var ec = existing.GetBoundingBox(true).Center;
+                if (center.DistanceTo(ec) < gap + half)
+                {
+                    ok = false;
+                    break;
+                }
+            }
+            if (!ok) continue;
+
+            candidates.Add(sq);
+        }
+
+        if (candidates.Count == 0)
+        {
+            AddIssue(analysis, zone, MassingIssueType.FootprintRejected, IssueSeverity.Warning,
+                "Random massing: no valid pads placed.");
+            return null;
+        }
+
+        if (candidates.Count >= maxPads)
+        {
+            AddIssue(analysis, zone, MassingIssueType.MassingClamped, IssueSeverity.Info,
+                $"Random massing clamped to {maxPads} buildings (max_buildings/coverage).");
+        }
+
+        return CurveToPads(candidates);
+    }
+
+    private List<FootprintPad>? BuildRows(
+        Curve envelope, ZoneRecord zone, ZoneAnalysis analysis, Random rng)
+    {
+        var result = new List<Curve>();
+        var bbox = envelope.GetBoundingBox(true);
+        var depth = DefaultBlockDepthM * _metersToDoc;
+        var gap = DefaultMinGapM * _metersToDoc;
+        var maxLen = DefaultMaxBarLengthM * _metersToDoc;
+        var sizeX = bbox.Max.X - bbox.Min.X;
+        var sizeY = bbox.Max.Y - bbox.Min.Y;
+        var alongX = sizeX >= sizeY;
+
+        if (alongX)
+        {
+            for (var y = bbox.Min.Y + depth * 0.5; y <= bbox.Max.Y - depth * 0.5 && result.Count < DefaultMaxBuildings; y += depth + gap)
+            {
+                var rowStart = bbox.Min.X + gap * 0.25;
+                var rowEnd = bbox.Max.X - gap * 0.25;
+                for (var x0 = rowStart; x0 < rowEnd - depth * 0.5 && result.Count < DefaultMaxBuildings; x0 += maxLen + gap)
+                {
+                    var x1 = Math.Min(x0 + maxLen, rowEnd);
+                    if (x1 - x0 < depth) break;
+                    var cx = (x0 + x1) * 0.5;
+                    var c = new Point3d(cx, y, bbox.Min.Z);
+                    if (envelope.Contains(c, Plane.WorldXY, _docTolerance) != PointContainment.Inside)
+                        continue;
+                    var halfW = (x1 - x0) * 0.5;
+                    var halfD = depth * 0.5;
+                    var rot = (rng.NextDouble() * 2 - 1) * (DefaultRotationJitterDeg * 0.25) * (Math.PI / 180.0);
+                    result.Add(MakeRect(cx, y, bbox.Min.Z, halfW, halfD, rot));
+                }
+            }
+        }
+        else
+        {
+            for (var x = bbox.Min.X + depth * 0.5; x <= bbox.Max.X - depth * 0.5 && result.Count < DefaultMaxBuildings; x += depth + gap)
+            {
+                var rowStart = bbox.Min.Y + gap * 0.25;
+                var rowEnd = bbox.Max.Y - gap * 0.25;
+                for (var y0 = rowStart; y0 < rowEnd - depth * 0.5 && result.Count < DefaultMaxBuildings; y0 += maxLen + gap)
+                {
+                    var y1 = Math.Min(y0 + maxLen, rowEnd);
+                    if (y1 - y0 < depth) break;
+                    var cy = (y0 + y1) * 0.5;
+                    var c = new Point3d(x, cy, bbox.Min.Z);
+                    if (envelope.Contains(c, Plane.WorldXY, _docTolerance) != PointContainment.Inside)
+                        continue;
+                    var halfD = depth * 0.5;
+                    var halfW = (y1 - y0) * 0.5;
+                    var rot = (rng.NextDouble() * 2 - 1) * (DefaultRotationJitterDeg * 0.25) * (Math.PI / 180.0);
+                    result.Add(MakeRect(x, cy, bbox.Min.Z, halfD, halfW, rot));
+                }
+            }
+        }
+
+        if (result.Count == 0)
+        {
+            AddIssue(analysis, zone, MassingIssueType.FootprintRejected, IssueSeverity.Warning,
+                "Row massing: no valid segments.");
+            return null;
+        }
+
+        if (result.Count >= DefaultMaxBuildings)
+        {
+            AddIssue(analysis, zone, MassingIssueType.MassingClamped, IssueSeverity.Info,
+                $"Row massing clamped to {DefaultMaxBuildings} segments.");
+        }
+
+        return CurveToPads(result);
+    }
+
+    private static Curve MakeRect(double cx, double cy, double z, double halfX, double halfY, double rotRad)
+    {
+        var corners = new[]
+        {
+            new Point3d(-halfX, -halfY, 0),
+            new Point3d(halfX, -halfY, 0),
+            new Point3d(halfX, halfY, 0),
+            new Point3d(-halfX, halfY, 0),
+        };
+        var cos = Math.Cos(rotRad);
+        var sin = Math.Sin(rotRad);
+        var pts = new Point3d[5];
+        for (var i = 0; i < 4; i++)
+        {
+            var x = corners[i].X * cos - corners[i].Y * sin;
+            var y = corners[i].X * sin + corners[i].Y * cos;
+            pts[i] = new Point3d(cx + x, cy + y, z);
+        }
+        pts[4] = pts[0];
+        return new PolylineCurve(pts);
+    }
+
+    private List<FootprintPad> CurveToPads(IEnumerable<Curve?> curves)
+    {
+        var list = new List<FootprintPad>();
+        foreach (var c in curves)
+        {
+            if (c is null || !c.IsValid) continue;
+            var amp = AreaMassProperties.Compute(c);
+            var areaSqm = amp is null ? 0 : amp.Area * _docToMeters * _docToMeters;
+            if (areaSqm <= 1e-6) continue;
+            list.Add(new FootprintPad { Curve = c, AreaSqm = areaSqm });
+        }
+        return list;
+    }
+
+    private static void AlignCurveToZ(Curve c, double z0)
+    {
+        var bb = c.GetBoundingBox(true);
+        var dz = z0 - bb.Min.Z;
+        if (Math.Abs(dz) > 1e-9)
+            c.Translate(0, 0, dz);
+    }
+
+    private static int StableSeed(Guid id)
+    {
+        var bytes = id.ToByteArray();
+        var h = 17;
+        foreach (var b in bytes)
+            h = h * 31 + b;
+        return h;
     }
 
     private static string NormalizeMassingType(string? raw)
@@ -226,148 +547,11 @@ public sealed class MassingGenerator
         return MassingTypes.Any(x => x == t) ? t : "solid";
     }
 
-    private List<Curve> BuildFootprints(Curve envelope, string massingType)
-    {
-        return massingType switch
-        {
-            "perimeter" => BuildPerimeterFootprints(envelope),
-            "point" => BuildPointFootprints(envelope, jitter: false),
-            "random" => BuildPointFootprints(envelope, jitter: true),
-            "row" => BuildRowFootprints(envelope),
-            _ => new List<Curve> { envelope.DuplicateCurve()! },
-        };
-    }
-
-    private List<Curve> BuildPerimeterFootprints(Curve envelope)
-    {
-        var depthDoc = DefaultBlockDepthM * _metersToDoc;
-        var inner = BuildEnvelope(envelope, depthDoc);
-        if (inner is null)
-            return new List<Curve> { envelope.DuplicateCurve()! };
-
-        try
-        {
-            var diff = Curve.CreateBooleanDifference(envelope, inner, _docTolerance);
-            if (diff is { Length: > 0 })
-                return diff.Where(c => c is not null && c.IsValid).Select(c => c!).ToList();
-        }
-        catch { }
-
-        return new List<Curve> { envelope.DuplicateCurve()! };
-    }
-
-    private List<Curve> BuildPointFootprints(Curve envelope, bool jitter)
-    {
-        var result = new List<Curve>();
-        var bbox = envelope.GetBoundingBox(true);
-        var pad = DefaultPadSizeM * _metersToDoc;
-        var gap = DefaultMinGapM * _metersToDoc;
-        var step = pad + gap;
-        if (step < _docTolerance * 50)
-            return new List<Curve> { envelope.DuplicateCurve()! };
-
-        var amp = AreaMassProperties.Compute(envelope);
-        var envelopeArea = amp?.Area ?? 0;
-        var maxPads = envelopeArea > 0
-            ? Math.Max(1, (int)(envelopeArea * DefaultCoverage / (pad * pad)))
-            : 12;
-
-        var rng = jitter ? new Random(HashCode.Combine(
-            (int)(bbox.Center.X * 100), (int)(bbox.Center.Y * 100))) : null;
-
-        var count = 0;
-        for (var x = bbox.Min.X + pad * 0.5; x <= bbox.Max.X - pad * 0.5 && count < maxPads; x += step)
-        {
-            for (var y = bbox.Min.Y + pad * 0.5; y <= bbox.Max.Y - pad * 0.5 && count < maxPads; y += step)
-            {
-                var cx = x;
-                var cy = y;
-                if (rng is not null)
-                {
-                    cx += (rng.NextDouble() - 0.5) * gap * 0.6;
-                    cy += (rng.NextDouble() - 0.5) * gap * 0.6;
-                }
-
-                var center = new Point3d(cx, cy, bbox.Min.Z);
-                if (envelope.Contains(center, Plane.WorldXY, _docTolerance) != PointContainment.Inside)
-                    continue;
-
-                var half = pad * 0.5;
-                var sq = new PolylineCurve(new[]
-                {
-                    new Point3d(cx - half, cy - half, bbox.Min.Z),
-                    new Point3d(cx + half, cy - half, bbox.Min.Z),
-                    new Point3d(cx + half, cy + half, bbox.Min.Z),
-                    new Point3d(cx - half, cy + half, bbox.Min.Z),
-                    new Point3d(cx - half, cy - half, bbox.Min.Z),
-                });
-                result.Add(sq);
-                count++;
-            }
-        }
-
-        return result.Count > 0 ? result : new List<Curve> { envelope.DuplicateCurve()! };
-    }
-
-    private List<Curve> BuildRowFootprints(Curve envelope)
-    {
-        var result = new List<Curve>();
-        var bbox = envelope.GetBoundingBox(true);
-        var depth = DefaultBlockDepthM * _metersToDoc;
-        var gap = DefaultMinGapM * _metersToDoc;
-        var sizeX = bbox.Max.X - bbox.Min.X;
-        var sizeY = bbox.Max.Y - bbox.Min.Y;
-        var alongX = sizeX >= sizeY;
-
-        if (alongX)
-        {
-            for (var y = bbox.Min.Y + depth * 0.5; y <= bbox.Max.Y - depth * 0.5; y += depth + gap)
-            {
-                var rect = new PolylineCurve(new[]
-                {
-                    new Point3d(bbox.Min.X + gap * 0.25, y - depth * 0.5, bbox.Min.Z),
-                    new Point3d(bbox.Max.X - gap * 0.25, y - depth * 0.5, bbox.Min.Z),
-                    new Point3d(bbox.Max.X - gap * 0.25, y + depth * 0.5, bbox.Min.Z),
-                    new Point3d(bbox.Min.X + gap * 0.25, y + depth * 0.5, bbox.Min.Z),
-                    new Point3d(bbox.Min.X + gap * 0.25, y - depth * 0.5, bbox.Min.Z),
-                });
-                // Keep only if center is inside envelope
-                var c = new Point3d(bbox.Center.X, y, bbox.Min.Z);
-                if (envelope.Contains(c, Plane.WorldXY, _docTolerance) == PointContainment.Inside)
-                    result.Add(rect);
-            }
-        }
-        else
-        {
-            for (var x = bbox.Min.X + depth * 0.5; x <= bbox.Max.X - depth * 0.5; x += depth + gap)
-            {
-                var rect = new PolylineCurve(new[]
-                {
-                    new Point3d(x - depth * 0.5, bbox.Min.Y + gap * 0.25, bbox.Min.Z),
-                    new Point3d(x + depth * 0.5, bbox.Min.Y + gap * 0.25, bbox.Min.Z),
-                    new Point3d(x + depth * 0.5, bbox.Max.Y - gap * 0.25, bbox.Min.Z),
-                    new Point3d(x - depth * 0.5, bbox.Max.Y - gap * 0.25, bbox.Min.Z),
-                    new Point3d(x - depth * 0.5, bbox.Min.Y + gap * 0.25, bbox.Min.Z),
-                });
-                var c = new Point3d(x, bbox.Center.Y, bbox.Min.Z);
-                if (envelope.Contains(c, Plane.WorldXY, _docTolerance) == PointContainment.Inside)
-                    result.Add(rect);
-            }
-        }
-
-        return result.Count > 0 ? result : new List<Curve> { envelope.DuplicateCurve()! };
-    }
-
     private Brep? ExtrudeFloor(Curve footprint, double heightDoc, double baseZ)
     {
         var c = footprint.DuplicateCurve();
         if (c is null) return null;
-
-        // Move curve to slab base elevation
-        var bbox = c.GetBoundingBox(true);
-        var dz = baseZ - bbox.Min.Z;
-        if (Math.Abs(dz) > _docTolerance)
-            c.Translate(0, 0, dz);
+        AlignCurveToZ(c, baseZ);
 
         try
         {
@@ -458,6 +642,8 @@ public sealed class MassingGenerator
             {
                 MassingIssueType.EnvelopeGenerationFailed => ZoneIssueType.DegenerateZone,
                 MassingIssueType.ZoneTooSmall => ZoneIssueType.DegenerateZone,
+                MassingIssueType.PerimeterBooleanFailed => ZoneIssueType.DegenerateZone,
+                MassingIssueType.PointMassingNotFeasible => ZoneIssueType.MissingAttributes,
                 _ => ZoneIssueType.MissingAttributes,
             },
             Severity = severity,
