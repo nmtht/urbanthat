@@ -10,6 +10,8 @@ public static class MassingCleanup
     public const string GeneratedByValue = "building_massing_generator";
     public const string SourceZoneKey = "source_zone_id";
     public const string FloorsKey = "floors";
+    public const string FloorIndexKey = "floor_index";
+    public const string MassingTypeKey = "massing_type";
     public const string FarActualKey = "far_actual";
     public const string FarTargetKey = "far_target";
 
@@ -23,6 +25,7 @@ public static class MassingCleanup
             if (string.Equals(v, GeneratedByValue, StringComparison.Ordinal))
                 ids.Add(obj.Id);
         }
+
         var deleted = 0;
         foreach (var id in ids)
         {
