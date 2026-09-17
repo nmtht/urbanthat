@@ -15,6 +15,7 @@ public sealed class MassingResult
     public double FarActual { get; init; }
     public double FarTarget { get; init; }
     public double FootprintAreaSqm { get; init; }
+    public double BuiltGfaSqm { get; init; }
     public int VolumeCount { get; init; }
     public int BuildingCount { get; init; }
 }
@@ -102,9 +103,7 @@ public sealed class MassingGenerator
                 if (result is null) continue;
                 batch.Buildings.Add(result);
                 batch.CreatedCount += result.VolumeCount;
-                batch.TotalBuiltFloorAreaSqm += result.FarActual * (analysis.MetricsById.TryGetValue(zone.RhinoObjectId, out var m) ? m.AreaSqm : result.FootprintAreaSqm);
-                // GFA = floors-weighted footprint sum already in FarActual * zone area; prefer explicit:
-                batch.TotalBuiltFloorAreaSqm = batch.Buildings.Sum(b => b.FootprintAreaSqm * ((b.FloorsMin + b.FloorsMax) / 2.0)); // refined below
+                batch.TotalBuiltFloorAreaSqm += result.BuiltGfaSqm;
             }
             catch (Exception ex)
             {
@@ -117,11 +116,6 @@ public sealed class MassingGenerator
                 });
             }
         }
-
-        // Recompute GFA from actual results stored during generate
-        batch.TotalBuiltFloorAreaSqm = 0;
-        foreach (var b in batch.Buildings)
-            batch.TotalBuiltFloorAreaSqm += b.FootprintAreaSqm * b.Floors; // Floors = average-ish; see GenerateOne
 
         doc.Views.Redraw();
         return batch;
@@ -156,7 +150,6 @@ public sealed class MassingGenerator
             return null;
         }
 
-        // Lift envelope to zone plane
         AlignCurveToZ(envelope, z0);
 
         var massingType = NormalizeMassingType(zone.MassingType);
@@ -191,9 +184,7 @@ public sealed class MassingGenerator
                 $"FAR {zone.Far:F2} not achievable within height_max; base floors={baseFloors}.");
         }
 
-        // Per-pad floor counts with height jitter (point/solid: no jitter)
         var jitter = massingType is "random" or "row" or "perimeter" ? DefaultHeightJitter : 0.0;
-        if (massingType == "point") jitter = 0.0;
 
         var floorCounts = new int[pads.Count];
         var totalGfa = 0.0;
@@ -206,10 +197,8 @@ public sealed class MassingGenerator
             totalGfa += pads[i].AreaSqm * f;
         }
 
-        // Trim GFA if overshoot target significantly (>15%)
         if (targetGfa > 0 && totalGfa > targetGfa * 1.15)
         {
-            // Reduce tallest pads first
             while (totalGfa > targetGfa * 1.05)
             {
                 var hi = 0;
@@ -271,6 +260,7 @@ public sealed class MassingGenerator
             FarActual = farActual,
             FarTarget = zone.Far,
             FootprintAreaSqm = footprintAreaSqm,
+            BuiltGfaSqm = totalGfa,
             VolumeCount = volumeCount,
             BuildingCount = pads.Count,
         };
@@ -320,7 +310,6 @@ public sealed class MassingGenerator
     {
         var bbox = envelope.GetBoundingBox(true);
         var pad = DefaultPadSizeM * _metersToDoc;
-        // Fit pad inside envelope: clamp to 40% of shorter side
         var shortSide = Math.Min(bbox.Max.X - bbox.Min.X, bbox.Max.Y - bbox.Min.Y);
         if (pad > shortSide * 0.5)
             pad = shortSide * 0.4;
@@ -336,7 +325,6 @@ public sealed class MassingGenerator
         center.Z = bbox.Min.Z;
         if (envelope.Contains(center, Plane.WorldXY, _docTolerance) != PointContainment.Inside)
         {
-            // fallback: try bbox center projections
             AddIssue(analysis, zone, MassingIssueType.PointMassingNotFeasible, IssueSeverity.Warning,
                 "Point massing: centroid not inside setback envelope.");
             return null;
@@ -372,11 +360,13 @@ public sealed class MassingGenerator
         var attempts = maxPads * 20;
         for (var a = 0; a < attempts && candidates.Count < maxPads; a++)
         {
-            var sizeScale = 0.7 + rng.NextDouble() * 0.5; // 0.7..1.2
+            var sizeScale = 0.7 + rng.NextDouble() * 0.5;
             var pad = DefaultPadSizeM * _metersToDoc * sizeScale;
             var half = pad * 0.5;
-            var cx = bbox.Min.X + half + rng.NextDouble() * Math.Max(_docTolerance, bbox.Max.X - bbox.Min.X - pad);
-            var cy = bbox.Min.Y + half + rng.NextDouble() * Math.Max(_docTolerance, bbox.Max.Y - bbox.Min.Y - pad);
+            var spanX = Math.Max(_docTolerance, bbox.Max.X - bbox.Min.X - pad);
+            var spanY = Math.Max(_docTolerance, bbox.Max.Y - bbox.Min.Y - pad);
+            var cx = bbox.Min.X + half + rng.NextDouble() * spanX;
+            var cy = bbox.Min.Y + half + rng.NextDouble() * spanY;
             var center = new Point3d(cx, cy, bbox.Min.Z);
             if (envelope.Contains(center, Plane.WorldXY, _docTolerance) != PointContainment.Inside)
                 continue;
@@ -384,7 +374,6 @@ public sealed class MassingGenerator
             var rot = (rng.NextDouble() * 2 - 1) * DefaultRotationJitterDeg * (Math.PI / 180.0);
             var sq = MakeRect(cx, cy, bbox.Min.Z, half, half, rot);
 
-            // min gap vs existing
             var ok = true;
             foreach (var existing in candidates)
             {
