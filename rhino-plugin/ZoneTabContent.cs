@@ -43,7 +43,7 @@ public sealed class ZoneTabContent : Panel
         refreshBtn.Click += (_, _) => Rebuild();
         var proxyBtn = new Button { Text = "Regenerate zone proxies" };
         proxyBtn.Click += (_, _) => RegenerateProxies();
-        var massingBtn = new Button { Text = "Generate massing" };
+        var massingBtn = new Button { Text = "Generate massing + courtyards" };
         massingBtn.Click += (_, _) => GenerateMassing();
 
         var attrGroup = new GroupBox
@@ -92,8 +92,11 @@ public sealed class ZoneTabContent : Panel
                     massingBtn,
                     new Label
                     {
-                        Text = "Apply massing_type first. Facades/trees → Architecture tab.\n" +
-                               "Massing footprints are clipped away from roadway.",
+                        Text = "Apply massing_type first.\n" +
+                               "Massing also builds green courtyards (Landscape::Courtyard):\n" +
+                               "  solid → setback ring · perimeter → inner yard\n" +
+                               "  point/random/row → residual between buildings.\n" +
+                               "Facades/roadside trees → Architecture tab.",
                         TextColor = Eto.Drawing.Colors.Gray,
                     },
                 },
@@ -298,7 +301,7 @@ public sealed class ZoneTabContent : Panel
             server.LatestMassingBuiltGfaSqm = batch.TotalBuiltFloorAreaSqm;
             RhinoApp.WriteLine(
                 $"[UrbanBridge] Massing: created {batch.CreatedCount}, deleted {batch.DeletedCount}, " +
-                $"GFA {batch.TotalBuiltFloorAreaSqm:F0} m²");
+                $"courtyard {batch.CourtyardCount}, GFA {batch.TotalBuiltFloorAreaSqm:F0} m²");
             if (PluginSettings.GenerateFacadesWithMassing)
             {
                 var fn = new FacadeGenerator(doc).GenerateFromMassing(doc, PluginSettings.GreenRoof);

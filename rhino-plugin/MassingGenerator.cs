@@ -18,6 +18,7 @@ public sealed class MassingResult
     public double BuiltGfaSqm { get; init; }
     public int VolumeCount { get; init; }
     public int BuildingCount { get; init; }
+    public int CourtyardObjectCount { get; init; }
 }
 
 public enum MassingIssueType
@@ -44,6 +45,7 @@ public sealed class MassingBatchResult
 {
     public int DeletedCount { get; set; }
     public int CreatedCount { get; set; }
+    public int CourtyardCount { get; set; }
     public List<MassingResult> Buildings { get; } = new();
     public List<MassingIssue> Issues { get; } = new();
     public double TotalBuiltFloorAreaSqm { get; set; }
@@ -52,6 +54,7 @@ public sealed class MassingBatchResult
 /// <summary>
 /// Massing 2.4: solid | perimeter | point | random | row.
 /// One Brep per floor; z0 from zone boundary; limits + height/rotation jitter.
+/// After volumes: CourtyardGenerator places green spaces per massing_type.
 /// </summary>
 public sealed partial class MassingGenerator
 {
@@ -93,16 +96,20 @@ public sealed partial class MassingGenerator
     {
         var batch = new MassingBatchResult();
         batch.DeletedCount = MassingCleanup.DeleteAllGenerated(doc);
+        batch.DeletedCount += CourtyardCleanup.DeleteAllGenerated(doc);
         EnsureLayer(doc, LayerMassing, System.Drawing.Color.FromArgb(160, 160, 170));
+
+        var courtyard = new CourtyardGenerator(doc);
 
         foreach (var zone in analysis.Zones)
         {
             try
             {
-                var result = GenerateOne(doc, zone, analysis);
+                var result = GenerateOne(doc, zone, analysis, courtyard);
                 if (result is null) continue;
                 batch.Buildings.Add(result);
                 batch.CreatedCount += result.VolumeCount;
+                batch.CourtyardCount += result.CourtyardObjectCount;
                 batch.TotalBuiltFloorAreaSqm += result.BuiltGfaSqm;
             }
             catch (Exception ex)
@@ -117,11 +124,14 @@ public sealed partial class MassingGenerator
             }
         }
 
+        RhinoApp.WriteLine(
+            $"[UrbanBridge] Massing batch: {batch.CreatedCount} slabs, {batch.CourtyardCount} courtyard objects.");
         doc.Views.Redraw();
         return batch;
     }
 
-    private MassingResult? GenerateOne(RhinoDoc doc, ZoneRecord zone, ZoneAnalysis analysis)
+    private MassingResult? GenerateOne(
+        RhinoDoc doc, ZoneRecord zone, ZoneAnalysis analysis, CourtyardGenerator courtyard)
     {
         var ztype = zone.ZoneType?.ToLowerInvariant() ?? "";
         if (ztype is "green" or "public")
@@ -253,9 +263,21 @@ public sealed partial class MassingGenerator
             }
         }
 
+        // Green spaces for this massing type
+        var padCurves = pads.Select(p => p.Curve).ToList();
+        var courtyardCount = 0;
+        try
+        {
+            courtyardCount = courtyard.GenerateForZone(doc, zone, massingType, envelope, padCurves, z0);
+        }
+        catch (Exception ex)
+        {
+            RhinoApp.WriteLine($"[UrbanBridge] Courtyard for zone failed: {ex.Message}");
+        }
+
         RhinoApp.WriteLine(
             $"[UrbanBridge] Massing {massingType}: zone {zone.RhinoObjectId.ToString()[..8]}… " +
-            $"{pads.Count} building(s), floors {floorsMin}–{floorsMax}, slabs {volumeCount}");
+            $"{pads.Count} building(s), floors {floorsMin}–{floorsMax}, slabs {volumeCount}, courtyard {courtyardCount}");
 
         return new MassingResult
         {
@@ -271,6 +293,7 @@ public sealed partial class MassingGenerator
             BuiltGfaSqm = totalGfa,
             VolumeCount = volumeCount,
             BuildingCount = pads.Count,
+            CourtyardObjectCount = courtyardCount,
         };
     }
 
