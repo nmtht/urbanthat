@@ -6,7 +6,7 @@ using Rhino.Geometry;
 namespace UrbanBridge.Plugin;
 
 /// <summary>
-/// Planar proxy fills for zones (color by zone_type), optionally clipped by roadway surfaces.
+/// Planar proxy fills for zones (color by zone_type), clipped by planar road outlines (not 3D roadway solids).
 /// </summary>
 public sealed class ZoneProxyGenerator
 {
@@ -24,16 +24,15 @@ public sealed class ZoneProxyGenerator
         ZoneProxyCleanup.DeleteAllGenerated(doc);
         EnsureLayer(doc, LayerProxy, Color.FromArgb(120, 160, 200));
 
-        var roadways = CollectRoadwayBreps(doc);
         var created = 0;
         foreach (var zone in analysis.Zones)
-            created += CreateProxy(doc, zone, roadways);
+            created += CreateProxy(doc, zone);
 
         doc.Views.Redraw();
         return created;
     }
 
-    public int CreateProxy(RhinoDoc doc, ZoneRecord zone, List<Brep>? roadways = null)
+    public int CreateProxy(RhinoDoc doc, ZoneRecord zone)
     {
         ZoneProxyCleanup.DeleteForZone(doc, zone.RhinoObjectId);
 
@@ -43,31 +42,23 @@ public sealed class ZoneProxyGenerator
             boundary.MakeClosed(_tolerance * 10);
         if (!boundary.IsClosed) return 0;
 
+        var z = boundary.GetBoundingBox(true).Min.Z;
         var pieces = Brep.CreatePlanarBreps(boundary, _tolerance);
         if (pieces is null || pieces.Length == 0) return 0;
 
-        roadways ??= CollectRoadwayBreps(doc);
+        var roads = RoadOutlineHelper.CollectPlanarRoadBreps(doc, z, _tolerance);
         var color = ColorForType(zone.ZoneType);
         var layerIndex = EnsureLayer(doc, LayerProxy, color);
         var created = 0;
 
         foreach (var piece in pieces)
         {
-            var remaining = new List<Brep> { piece };
-            if (roadways.Count > 0)
-            {
-                var next = new List<Brep>();
-                foreach (var b in remaining)
-                {
-                    var clipped = SubtractRoadways(b, roadways);
-                    if (clipped.Count == 0)
-                        next.Add(b); // keep uncut if boolean fails
-                    else
-                        next.AddRange(clipped);
-                }
-                remaining = next;
-            }
+            var remaining = roads.Count > 0
+                ? RoadOutlineHelper.Subtract(piece, roads, _tolerance)
+                : new List<Brep> { piece };
 
+            // If subtract wiped everything incorrectly empty but roads empty path handled;
+            // if roads present and result empty — zone fully under road, skip.
             foreach (var brep in remaining)
             {
                 if (brep is null || !brep.IsValid) continue;
@@ -86,55 +77,6 @@ public sealed class ZoneProxyGenerator
         }
 
         return created;
-    }
-
-    private List<Brep> SubtractRoadways(Brep zoneBrep, List<Brep> roadways)
-    {
-        var current = new List<Brep> { zoneBrep };
-        foreach (var road in roadways)
-        {
-            var next = new List<Brep>();
-            foreach (var piece in current)
-            {
-                try
-                {
-                    var diff = Brep.CreateBooleanDifference(piece, road, _tolerance);
-                    if (diff is { Length: > 0 })
-                        next.AddRange(diff);
-                    else
-                        next.Add(piece);
-                }
-                catch
-                {
-                    next.Add(piece);
-                }
-            }
-            current = next;
-            if (current.Count == 0) break;
-        }
-        return current;
-    }
-
-    private static List<Brep> CollectRoadwayBreps(RhinoDoc doc)
-    {
-        var list = new List<Brep>();
-        foreach (var obj in doc.Objects)
-        {
-            if (obj is null || obj.IsDeleted) continue;
-            var layer = doc.Layers[obj.Attributes.LayerIndex];
-            if (layer is null) continue;
-            if (!layer.FullPath.Equals(RoadSurfaceGenerator.LayerRoadway, StringComparison.OrdinalIgnoreCase))
-                continue;
-
-            if (obj.Geometry is Brep brep)
-                list.Add(brep);
-            else if (obj.Geometry is Extrusion ext)
-            {
-                var b = ext.ToBrep();
-                if (b is not null) list.Add(b);
-            }
-        }
-        return list;
     }
 
     public static Color ColorForType(string zoneType) => zoneType.ToLowerInvariant() switch
@@ -175,21 +117,12 @@ public sealed class ZoneProxyGenerator
                     break;
                 }
             }
-
-            if (found >= 0)
-            {
-                parentIndex = found;
-                continue;
-            }
-
+            if (found >= 0) { parentIndex = found; continue; }
             var newLayer = new Layer { Name = parts[p] };
-            if (parentIndex >= 0)
-                newLayer.ParentLayerId = doc.Layers[parentIndex].Id;
-            if (p == parts.Length - 1)
-                newLayer.Color = color;
+            if (parentIndex >= 0) newLayer.ParentLayerId = doc.Layers[parentIndex].Id;
+            if (p == parts.Length - 1) newLayer.Color = color;
             parentIndex = doc.Layers.Add(newLayer);
         }
-
         return parentIndex >= 0 ? parentIndex : 0;
     }
 }
