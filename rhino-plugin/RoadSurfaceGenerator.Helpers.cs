@@ -12,7 +12,7 @@ public sealed partial class RoadSurfaceGenerator
         var stopOffset = StopLineOffsetMeters * _metersToDoc;
         var crossDepth = CrosswalkDepthMeters * _metersToDoc;
         var stripeW = CrosswalkStripeMeters * _metersToDoc;
-        var stripeGap = stripeW; // equal gap between stripes
+        var stripeGap = stripeW;
 
         foreach (var eg in incident)
         {
@@ -22,7 +22,6 @@ public sealed partial class RoadSurfaceGenerator
             var along = Math.Max(eg.ExtStart, eg.ExtEnd);
             if (along < _docTolerance) along = stopOffset;
 
-            var stopCenter = nodePt + dir * (along + stopOffset);
             var perp = Vector3d.CrossProduct(dir, Vector3d.ZAxis);
             if (!perp.Unitize())
             {
@@ -32,7 +31,19 @@ public sealed partial class RoadSurfaceGenerator
 
             var halfW = eg.WidthDoc * 0.5;
 
-            // Stop line as thin mesh strip
+            // Full crosswalk as planar pedestrian surface (same type as sidewalk strip)
+            var crossCenter = nodePt + dir * (along * 0.45 + crossDepth * 0.5);
+            var halfD = crossDepth * 0.5;
+            var a = crossCenter + dir * (-halfD) + perp * (-halfW);
+            var b = crossCenter + dir * (halfD) + perp * (-halfW);
+            var c = crossCenter + dir * (halfD) + perp * (halfW);
+            var d = crossCenter + dir * (-halfD) + perp * (halfW);
+            a.Z = b.Z = c.Z = d.Z = nodePt.Z;
+            var poly = new PolylineCurve(new[] { a, b, c, d, a });
+            created += AddPlanarBreps(doc, poly, LayerCrossing, nodeId: node.Id);
+
+            // Stop line as thin mesh on top of surface
+            var stopCenter = nodePt + dir * (along + stopOffset);
             created += AddMeshStripe(
                 doc,
                 stopCenter - dir * (stripeW * 0.25),
@@ -40,15 +51,14 @@ public sealed partial class RoadSurfaceGenerator
                 stripeW * 0.5, halfW * 2,
                 LayerCrossing, node.Id);
 
-            // Zebra: series of mesh rectangles across the roadway near the node
-            var crossStart = nodePt + dir * Math.Max(along * 0.25, _docTolerance * 10);
+            // Zebra stripes on the crosswalk surface
             var pitch = stripeW + stripeGap;
             var nStripes = Math.Max(3, (int)(crossDepth / Math.Max(pitch, _docTolerance)));
             for (var i = 0; i < nStripes; i++)
             {
-                var c = crossStart + dir * (pitch * (i + 0.5));
+                var sc = crossCenter + dir * (-halfD + pitch * (i + 0.5));
                 created += AddMeshStripe(
-                    doc, c, dir, perp,
+                    doc, sc, dir, perp,
                     stripeW, halfW * 2,
                     LayerCrossing, node.Id);
             }
@@ -76,8 +86,7 @@ public sealed partial class RoadSurfaceGenerator
 
         var halfD = depth * 0.5;
         var halfW = width * 0.5;
-        // Slightly raise above roadway to avoid z-fighting
-        var lift = _docTolerance * 5;
+        var lift = _docTolerance * 8;
         var z = center.Z + lift;
 
         var a = center + alongDir * (-halfD) + perp * (-halfW);
@@ -220,11 +229,16 @@ public sealed partial class RoadSurfaceGenerator
         if (!closed.IsClosed) closed.MakeClosed(_docTolerance * 10);
         var breps = Brep.CreatePlanarBreps(closed, _docTolerance);
         if (breps is null || breps.Length == 0) return 0;
-        var layerIndex = EnsureLayerPath(doc, layerPath, null);
+        var layerIndex = EnsureLayerPath(doc, layerPath, System.Drawing.Color.FromArgb(230, 230, 225));
         var count = 0;
         foreach (var brep in breps)
         {
-            var attrs = new ObjectAttributes { LayerIndex = layerIndex };
+            var attrs = new ObjectAttributes
+            {
+                LayerIndex = layerIndex,
+                ColorSource = ObjectColorSource.ColorFromObject,
+                ObjectColor = System.Drawing.Color.FromArgb(235, 235, 230),
+            };
             attrs.SetUserString(RoadSurfaceCleanup.GeneratedByKey, RoadSurfaceCleanup.GeneratedByValue);
             if (edgeId is not null) attrs.SetUserString(RoadSurfaceCleanup.SourceEdgeKey, edgeId);
             if (nodeId is not null) attrs.SetUserString(RoadSurfaceCleanup.SourceNodeKey, nodeId);
