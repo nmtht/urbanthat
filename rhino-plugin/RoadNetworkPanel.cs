@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using Eto.Drawing;
 using Eto.Forms;
 using Rhino.UI;
 
@@ -13,14 +14,17 @@ public class RoadNetworkPanel : Panel, IPanel
 
     public RoadNetworkPanel()
     {
+        BackgroundColor = UiTheme.PanelBg;
         Content = _content;
         _content.AttachServer(UrbanBridgePlugin.Instance?.Server);
+        UiTheme.ApplyDark(this);
     }
 
     public void PanelShown(uint documentSerialNumber, ShowPanelReason reason)
     {
         _content.AttachServer(UrbanBridgePlugin.Instance?.Server);
         _content.RefreshActiveTab();
+        UiTheme.ApplyDark(this);
     }
 
     public void PanelHidden(uint documentSerialNumber, ShowPanelReason reason)
