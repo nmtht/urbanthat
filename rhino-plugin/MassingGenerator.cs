@@ -171,7 +171,6 @@ public sealed partial class MassingGenerator
         var rng = new Random(seed);
         var isMixed = ztype == "mixed_use";
 
-        // —— Perimeter: hollow ring (outer − inner), not a filled box ——
         if (massingType == "perimeter")
             return GeneratePerimeterHollow(doc, zone, analysis, courtyard, envelope, z0, zoneAreaSqm, targetGfa, rng, isMixed);
 
@@ -179,7 +178,6 @@ public sealed partial class MassingGenerator
         if (pads is null || pads.Count == 0)
             return null;
 
-        // mixed_use: tag ~half pads as commercial (taller bias)
         if (isMixed)
         {
             for (var i = 0; i < pads.Count; i++)
@@ -218,7 +216,6 @@ public sealed partial class MassingGenerator
                 $"FAR {zone.Far:F2} not achievable within height_max; base floors={baseFloors}.");
         }
 
-        // Strong height variety (all types except pure solid get jitter; solid gets mild)
         var jitter = massingType == "solid" ? 0.2 : DefaultHeightJitter;
 
         var floorCounts = new int[pads.Count];
@@ -230,7 +227,6 @@ public sealed partial class MassingGenerator
             var u = (rng.NextDouble() * 2 - 1) * jitter;
             var f = (int)Math.Round(baseFloors * bias * (1.0 + u));
             f = Math.Clamp(f, 1, maxFloorsByHeight);
-            // Ensure at least two different heights when multiple pads
             if (pads.Count > 1 && i == 0)
                 f = Math.Max(1, Math.Min(maxFloorsByHeight, baseFloors - 1));
             if (pads.Count > 1 && i == 1)
@@ -239,7 +235,6 @@ public sealed partial class MassingGenerator
             totalGfa += pads[i].AreaSqm * f;
         }
 
-        // Soft FAR clamp — prefer variety over exact match
         if (targetGfa > 0 && totalGfa > targetGfa * 1.2)
         {
             while (totalGfa > targetGfa * 1.08)
@@ -332,10 +327,6 @@ public sealed partial class MassingGenerator
         };
     }
 
-    /// <summary>
-    /// Perimeter massing: each floor is outer extrude minus inner extrude → hollow courtyard.
-    /// Block depth shrinks as green_ratio grows (larger yard).
-    /// </summary>
     private MassingResult? GeneratePerimeterHollow(
         RhinoDoc doc,
         ZoneRecord zone,
@@ -349,7 +340,6 @@ public sealed partial class MassingGenerator
         bool isMixed)
     {
         var green = Math.Clamp(zone.GreenRatio, 0, 0.85);
-        // More green → thinner ring → larger courtyard
         var depthM = DefaultBlockDepthM * (0.5 + 0.5 * (1.0 - green));
         depthM = Math.Clamp(depthM, 8.0, DefaultBlockDepthM);
         var depthDoc = depthM * _metersToDoc;
@@ -387,23 +377,14 @@ public sealed partial class MassingGenerator
                 $"FAR {zone.Far:F2} not achievable; base floors={baseFloors}.");
         }
 
-        // Varied height along the ring: several height bands around the courtyard
-        // We extrude one hollow slab per floor index up to floorsMax, but skip some sides via
-        // notching is complex — instead vary total floors with jitter and also step height:
-        // floors 1..floorsMin always full ring; upper floors use random partial (skipped for MVP:
-        // full ring with strong per-zone floor count still uniform).
-        // Split into 4 corner towers with different heights for silhouette.
         var cornerPads = BuildPerimeterCornerPads(envelope, inner, z0);
         if (cornerPads.Count >= 2)
         {
-            // Use corner buildings + residual ring is heavy; prefer full hollow with
-            // multiple height steps: lower podium floors (full ring) + upper towers on corners.
             return GeneratePerimeterPodiumAndCorners(
                 doc, zone, analysis, courtyard, envelope, inner, cornerPads,
                 z0, zoneAreaSqm, footprintAreaSqm, baseFloors, maxFloorsByHeight, rng, isMixed);
         }
 
-        // Fallback: uniform hollow ring with mild floor jitter (single height)
         var floors = baseFloors;
         var u = (rng.NextDouble() * 2 - 1) * 0.25;
         floors = Math.Clamp((int)Math.Round(baseFloors * (1 + u)), 1, maxFloorsByHeight);
@@ -463,9 +444,7 @@ public sealed partial class MassingGenerator
         Random rng,
         bool isMixed)
     {
-        // Podium: 1–3 floors full hollow ring
         var podiumFloors = Math.Clamp(Math.Min(3, baseFloors / 2 + 1), 1, maxFloors);
-        // Corner towers: extra floors on top of podium with high variety
         var towerExtra = new int[corners.Count];
         for (var i = 0; i < corners.Count; i++)
         {
@@ -509,7 +488,6 @@ public sealed partial class MassingGenerator
         }
 
         var farActual = totalGfa / zoneAreaSqm;
-        // Stamp FAR on objects is optional; log it
         var floorsMin = podiumFloors;
         var floorsMax = podiumFloors + (towerExtra.Length > 0 ? towerExtra.Max() : 0);
 
@@ -538,34 +516,55 @@ public sealed partial class MassingGenerator
         };
     }
 
-    /// <summary>Approximate corner pads at midpoints of outer edges (for tower tops).</summary>
+    /// <summary>Approximate corner pads on outer ring (for tower tops above podium).</summary>
     private List<FootprintPad> BuildPerimeterCornerPads(Curve envelope, Curve inner, double z0)
     {
         var pads = new List<FootprintPad>();
-        var poly = envelope.ToPolyline(0, 0, 0.1, _docTolerance, 0, _docTolerance * 10, 0.1, 0, true);
+
+        Polyline? poly = null;
+        if (envelope.TryGetPolyline(out var pl))
+            poly = pl;
+        else
+        {
+            var pts = new List<Point3d>();
+            const int div = 16;
+            for (var i = 0; i < div; i++)
+            {
+                var t = envelope.Domain.ParameterAt(i / (double)div);
+                pts.Add(envelope.PointAt(t));
+            }
+            if (pts.Count > 0)
+            {
+                pts.Add(pts[0]);
+                poly = new Polyline(pts);
+            }
+        }
+
         if (poly is null || poly.Count < 4) return pads;
 
-        var size = 12.0 * _metersToDoc; // tower footprint ~12m
+        var size = 12.0 * _metersToDoc;
         var half = size * 0.5;
-        var n = poly.Count - 1; // closed
+        var n = poly.Count;
+        if (poly.IsClosed && n > 1)
+            n -= 1;
+        if (n < 4) return pads;
+
         var step = Math.Max(1, n / 4);
         for (var i = 0; i < n && pads.Count < 4; i += step)
         {
             var pt = poly[i];
             pt.Z = z0;
-            // Keep corner roughly between outer and inner
+
             if (inner.Contains(pt, Plane.WorldXY, _docTolerance) == PointContainment.Inside)
-            {
-                // push outward slightly — skip if deep inside yard
                 continue;
-            }
             if (envelope.Contains(pt, Plane.WorldXY, _docTolerance) != PointContainment.Inside)
                 continue;
 
             var sq = MakeRect(pt.X, pt.Y, z0, half, half, 0);
-            if (envelope.Contains(sq.GetBoundingBox(true).Center, Plane.WorldXY, _docTolerance) != PointContainment.Inside)
+            var center = sq.GetBoundingBox(true).Center;
+            if (envelope.Contains(center, Plane.WorldXY, _docTolerance) != PointContainment.Inside)
                 continue;
-            if (inner.Contains(sq.GetBoundingBox(true).Center, Plane.WorldXY, _docTolerance) == PointContainment.Inside)
+            if (inner.Contains(center, Plane.WorldXY, _docTolerance) == PointContainment.Inside)
                 continue;
 
             var amp = AreaMassProperties.Compute(sq);
@@ -589,7 +588,6 @@ public sealed partial class MassingGenerator
             var diff = Brep.CreateBooleanDifference(outerSolid, innerSolid, _docTolerance);
             if (diff is { Length: > 0 })
             {
-                // Prefer single solid; join if multiple
                 if (diff.Length == 1) return diff[0];
                 var joined = Brep.JoinBreps(diff, _docTolerance);
                 if (joined is { Length: > 0 }) return joined[0];
@@ -598,7 +596,7 @@ public sealed partial class MassingGenerator
         }
         catch { }
 
-        return outerSolid; // last resort — still better than nothing; log in caller if needed
+        return outerSolid;
     }
 
     private int AddMassingBrep(
@@ -633,7 +631,7 @@ public sealed partial class MassingGenerator
     {
         return massingType switch
         {
-            "perimeter" => null, // handled separately
+            "perimeter" => null,
             "point" => BuildPointSingle(envelope, zone, analysis),
             "random" => BuildRandom(envelope, zone, analysis, rng),
             "row" => BuildRows(envelope, zone, analysis, rng),
