@@ -12,6 +12,7 @@ public sealed class UiPresetBar : Drawable
     private readonly string[] _items;
     private int _selected;
     private int _hover = -1;
+    private readonly List<float> _widths = new();
 
     public int SelectedIndex
     {
@@ -35,7 +36,7 @@ public sealed class UiPresetBar : Drawable
     {
         _items = items ?? Array.Empty<string>();
         _selected = Math.Clamp(selected, 0, Math.Max(0, _items.Length - 1));
-        Size = new Size(300, 32);
+        Size = new Size(320, 34);
         Cursor = Cursors.Pointer;
 
         MouseMove += (_, e) =>
@@ -52,6 +53,13 @@ public sealed class UiPresetBar : Drawable
         };
     }
 
+    public void SelectByName(string name)
+    {
+        var idx = Array.FindIndex(_items, t =>
+            t.Equals(name, StringComparison.OrdinalIgnoreCase));
+        if (idx >= 0) SelectedIndex = idx;
+    }
+
     protected override void OnPaint(PaintEventArgs e)
     {
         var g = e.Graphics;
@@ -64,12 +72,14 @@ public sealed class UiPresetBar : Drawable
         var h = Height - 4f;
         var y = 2f;
         var x = 0f;
+        _widths.Clear();
 
         for (var i = 0; i < _items.Length; i++)
         {
             var text = _items[i];
             var tw = g.MeasureString(font, text).Width;
             var w = tw + padX * 2;
+            _widths.Add(w);
 
             var bg = i == _selected ? UiTheme.ChipSelected
                 : i == _hover ? UiTheme.ChipHover
@@ -77,9 +87,8 @@ public sealed class UiPresetBar : Drawable
             var fg = i == _selected ? UiTheme.ChipTextOn : UiTheme.ChipText;
 
             g.FillRectangle(bg, x, y, w, h);
-            // subtle border
-            g.DrawRectangle(new Pen(UiTheme.Soft(AccentBorder(i == _selected), 0.3f), 1),
-                x, y, w, h);
+            var border = i == _selected ? UiTheme.AccentDark : UiTheme.Track;
+            g.DrawRectangle(new Pen(border, 1), x, y, w, h);
 
             var tx = x + (w - tw) * 0.5f;
             var ty = y + (h - font.LineHeight) * 0.5f;
@@ -89,24 +98,26 @@ public sealed class UiPresetBar : Drawable
         }
     }
 
-    private static Color AccentBorder(bool selected) =>
-        selected ? UiTheme.AccentDark : UiTheme.Track;
-
     private int HitIndex(float mx)
     {
-        // Approximate same layout as paint
-        using var bmp = new Bitmap(new Size(4, 4), PixelFormat.Format32bppRgba);
-        using var g = new Graphics(bmp);
-        var font = Fonts.Sans(8);
-        var gap = 4f;
-        var padX = 8f;
-        var x = 0f;
-        for (var i = 0; i < _items.Length; i++)
+        if (_widths.Count != _items.Length)
         {
-            var tw = g.MeasureString(font, _items[i]).Width;
-            var w = tw + padX * 2;
-            if (mx >= x && mx <= x + w) return i;
-            x += w + gap;
+            // Fallback equal width estimate before first paint
+            var approx = 56f;
+            for (var i = 0; i < _items.Length; i++)
+            {
+                if (mx >= i * (approx + 4) && mx < (i + 1) * (approx + 4))
+                    return i;
+            }
+            return -1;
+        }
+
+        var x = 0f;
+        const float gap = 4f;
+        for (var i = 0; i < _widths.Count; i++)
+        {
+            if (mx >= x && mx <= x + _widths[i]) return i;
+            x += _widths[i] + gap;
         }
         return -1;
     }

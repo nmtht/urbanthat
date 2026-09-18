@@ -5,13 +5,17 @@ using Rhino.Geometry;
 
 namespace UrbanBridge.Plugin;
 
-/// <summary>Project dashboard: KPIs, bar chart, boundary scope, auto-update toggle.</summary>
+/// <summary>
+/// Project dashboard. Land-use balance is always relative to the
+/// project boundary area (not sum of zones).
+/// </summary>
 public sealed class DashboardTabContent : Panel
 {
-    private readonly Label _boundaryLabel = new() { Text = "Boundary: (entire model)" };
+    private readonly Label _boundaryLabel = new() { Text = "Boundary: not set" };
+    private readonly Label _boundaryAreaLabel = new() { Text = "Boundary area: —", TextColor = UiTheme.Muted };
     private readonly CheckBox _autoUpdate = new()
     {
-        Text = "Auto-update ALL geometry (roads, zones, massing, courtyards)",
+        Text = "Auto-update ALL geometry",
         Checked = false,
     };
     private readonly Label _popLabel = new() { Text = "Population: —" };
@@ -19,99 +23,116 @@ public sealed class DashboardTabContent : Panel
     private readonly Label _greenLabel = new() { Text = "Green: —" };
     private readonly Label _roadDensityLabel = new() { Text = "Road density: —" };
     private readonly Label _builtGfaLabel = new() { Text = "Built floor area: —" };
-    private readonly Label _staleLabel = new() { Text = "", TextColor = Colors.DarkOrange };
+    private readonly Label _staleLabel = new() { Text = "", TextColor = UiTheme.Danger };
     private readonly Label _balanceLabel = new() { Text = "Balance: —" };
-    private readonly Drawable _chart = new() { Size = new Size(320, 140), BackgroundColor = Colors.White };
+    private readonly Label _unzonedLabel = new() { Text = "", TextColor = UiTheme.Muted };
+    private readonly Drawable _chart = new() { Size = new Size(320, 150), BackgroundColor = UiTheme.CardBg };
     private readonly TextArea _areaByType = new() { ReadOnly = true, Wrap = true, Height = 90 };
     private readonly TextArea _roadStats = new() { ReadOnly = true, Wrap = true, Height = 70 };
     private readonly Label _xlsHint = new()
     {
-        Text = "Export to XLS — planned (link dashboard metrics to a spreadsheet).",
-        TextColor = Colors.Gray,
+        Text = "Export to XLS — planned.",
+        TextColor = UiTheme.Muted,
     };
 
     private BridgeServer? _server;
     private readonly object _uiGate = new();
     private System.Threading.Timer? _uiTimer;
     private Dictionary<string, double> _chartData = new(StringComparer.OrdinalIgnoreCase);
+    private double _boundaryAreaSqm;
 
     public DashboardTabContent()
     {
+        BackgroundColor = UiTheme.PanelBg;
         _autoUpdate.Checked = PluginSettings.AutoUpdateGeometry;
         _autoUpdate.CheckedChanged += (_, _) =>
             PluginSettings.AutoUpdateGeometry = _autoUpdate.Checked == true;
 
-        var setBoundary = new Button { Text = "Set project boundary from selection" };
+        var setBoundary = new Button { Text = "Set from selection" };
         setBoundary.Click += (_, _) => SetBoundaryFromSelection();
-        var clearBoundary = new Button { Text = "Clear boundary" };
+        var clearBoundary = new Button { Text = "Clear" };
         clearBoundary.Click += (_, _) =>
         {
             PluginSettings.ProjectBoundaryId = null;
-            _boundaryLabel.Text = "Boundary: (entire model)";
             ForceRecompute();
         };
-
-        var refresh = new Button { Text = "Refresh (recompute)" };
+        var refresh = new Button { Text = "Refresh" };
         refresh.Click += (_, _) => ForceRecompute();
 
         _chart.Paint += OnChartPaint;
 
+        var title = new Label
+        {
+            Text = "Project Dashboard",
+            Font = new Font(SystemFont.Bold, 13),
+            TextColor = UiTheme.SectionTitle,
+        };
+
+        var boundaryBox = new GroupBox
+        {
+            Text = "Territory boundary (required for balance)",
+            Content = new DynamicLayout
+            {
+                Padding = 8,
+                Spacing = new Size(6, 4),
+                Rows =
+                {
+                    new Label
+                    {
+                        Text = "All KPIs & land-use balance use this closed curve as 100%.",
+                        TextColor = UiTheme.Muted,
+                    },
+                    _boundaryLabel,
+                    _boundaryAreaLabel,
+                    new TableLayout
+                    {
+                        Spacing = new Size(6, 0),
+                        Rows = { new TableRow(setBoundary, clearBoundary, null) },
+                    },
+                },
+            },
+        };
+
+        var kpiLayout = new DynamicLayout { Spacing = new Size(4, 2) };
+        kpiLayout.AddRow(_popLabel);
+        kpiLayout.AddRow(_jobsLabel);
+        kpiLayout.AddRow(_greenLabel);
+        kpiLayout.AddRow(_roadDensityLabel);
+        kpiLayout.AddRow(_builtGfaLabel);
+
+        var root = new DynamicLayout
+        {
+            Padding = 12,
+            Spacing = new Size(8, 8),
+            DefaultSpacing = new Size(6, 4),
+        };
+        root.AddRow(title);
+        root.AddRow(_autoUpdate);
+        root.AddRow(new Label
+        {
+            Text = "On: road/zone edits regenerate surfaces, proxies, massing, courtyards.",
+            TextColor = UiTheme.Muted,
+        });
+        root.AddRow(boundaryBox);
+        root.AddRow(_staleLabel);
+        root.AddRow(new Label { Text = "Key metrics", Font = new Font(SystemFont.Bold, 10), TextColor = UiTheme.Accent });
+        root.AddRow(kpiLayout);
+        root.AddRow(new Label { Text = "Land-use balance (of boundary)", Font = new Font(SystemFont.Bold, 10), TextColor = UiTheme.Accent });
+        root.AddRow(_balanceLabel);
+        root.AddRow(_unzonedLabel);
+        root.AddRow(_chart);
+        root.AddRow(new Label { Text = "Area by zone_type (inside boundary)" });
+        root.AddRow(_areaByType);
+        root.AddRow(new Label { Text = "Road network (inside boundary)" });
+        root.AddRow(_roadStats);
+        root.AddRow(refresh);
+        root.AddRow(_xlsHint);
+
         Content = new Scrollable
         {
             Border = BorderType.None,
-            Content = new StackLayout
-            {
-                Padding = 10,
-                Spacing = 6,
-                HorizontalContentAlignment = HorizontalAlignment.Stretch,
-                Items =
-                {
-                    new Label { Text = "Project Dashboard", Font = new Font(SystemFont.Bold, 12) },
-                    _autoUpdate,
-                    new Label
-                    {
-                        Text = "When on: move road/zone curve → surfaces, proxies, buildings & green update.",
-                        TextColor = Colors.Gray,
-                    },
-                    new GroupBox
-                    {
-                        Text = "Project boundary",
-                        Content = new StackLayout
-                        {
-                            Padding = 6, Spacing = 4,
-                            Items =
-                            {
-                                _boundaryLabel,
-                                new StackLayout
-                                {
-                                    Orientation = Orientation.Horizontal, Spacing = 6,
-                                    Items = { setBoundary, clearBoundary },
-                                },
-                                new Label
-                                {
-                                    Text = "Select a closed curve → Set boundary. Stats filter zones/roads inside it.",
-                                    TextColor = Colors.Gray,
-                                },
-                            },
-                        },
-                    },
-                    _staleLabel,
-                    _popLabel,
-                    _jobsLabel,
-                    _greenLabel,
-                    _roadDensityLabel,
-                    _builtGfaLabel,
-                    _balanceLabel,
-                    new Label { Text = "Land-use balance" },
-                    _chart,
-                    new Label { Text = "Area by zone_type" },
-                    _areaByType,
-                    new Label { Text = "Road network" },
-                    _roadStats,
-                    refresh,
-                    _xlsHint,
-                },
-            },
+            BackgroundColor = UiTheme.PanelBg,
+            Content = root,
         };
 
         UpdateBoundaryLabel();
@@ -173,7 +194,6 @@ public sealed class DashboardTabContent : Panel
             if (obj?.Geometry is Curve c && c.IsClosed)
             {
                 PluginSettings.ProjectBoundaryId = obj.Id;
-                UpdateBoundaryLabel();
                 RhinoApp.WriteLine($"[UrbanBridge] Project boundary set: {obj.Id.ToString()[..8]}…");
                 ForceRecompute();
                 return;
@@ -184,10 +204,32 @@ public sealed class DashboardTabContent : Panel
 
     private void UpdateBoundaryLabel()
     {
+        _boundaryAreaSqm = ComputeBoundaryAreaSqm();
         if (PluginSettings.ProjectBoundaryId is { } id)
+        {
             _boundaryLabel.Text = $"Boundary: {id.ToString()[..8]}…";
+            _boundaryAreaLabel.Text = _boundaryAreaSqm > 0
+                ? $"Boundary area: {_boundaryAreaSqm:F0} m² ({_boundaryAreaSqm / 10_000.0:F2} ha)"
+                : "Boundary area: — (invalid curve)";
+        }
         else
-            _boundaryLabel.Text = "Boundary: (entire model)";
+        {
+            _boundaryLabel.Text = "Boundary: not set";
+            _boundaryAreaLabel.Text = "Set a closed curve — balance % uses it as 100%.";
+            _boundaryAreaSqm = 0;
+        }
+    }
+
+    private static double ComputeBoundaryAreaSqm()
+    {
+        var doc = RhinoDoc.ActiveDoc;
+        if (doc is null || PluginSettings.ProjectBoundaryId is not { } id) return 0;
+        var obj = doc.Objects.FindId(id);
+        if (obj?.Geometry is not Curve c || !c.IsClosed) return 0;
+        var amp = AreaMassProperties.Compute(c);
+        if (amp is null) return 0;
+        var scale = RhinoMath.UnitScale(doc.ModelUnitSystem, UnitSystem.Meters);
+        return amp.Area * scale * scale;
     }
 
     private void OnZone(ZoneAnalysis a) => ScheduleApply(a, _server?.LatestRoadNetwork);
@@ -201,6 +243,7 @@ public sealed class DashboardTabContent : Panel
     private void Apply(ZoneAnalysis? zones, RoadNetworkGraph? roads)
     {
         UpdateBoundaryLabel();
+        var denom = _boundaryAreaSqm; // project territory as 100%
 
         if (zones is null)
         {
@@ -208,6 +251,7 @@ public sealed class DashboardTabContent : Panel
             _jobsLabel.Text = "Jobs: —";
             _greenLabel.Text = "Green: —";
             _balanceLabel.Text = "Balance: —";
+            _unzonedLabel.Text = "";
             _areaByType.Text = "No zone data.";
             _chartData = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
             _chart.Invalidate();
@@ -216,18 +260,41 @@ public sealed class DashboardTabContent : Panel
         {
             _popLabel.Text = $"Population (est.): {zones.TotalPopulation:F0}";
             _jobsLabel.Text = $"Jobs (est.): {zones.TotalJobs:F0}";
-            var greenPct = zones.TotalAreaSqm > 0 ? 100.0 * zones.TotalGreenAreaSqm / zones.TotalAreaSqm : 0;
-            _greenLabel.Text = $"Green area: {zones.TotalGreenAreaSqm:F0} m² ({greenPct:F1}% of zones)";
 
-            var res = zones.AreaByType.GetValueOrDefault("residential");
-            var com = zones.AreaByType.GetValueOrDefault("commercial") +
-                      zones.AreaByType.GetValueOrDefault("mixed_use");
-            var ind = zones.AreaByType.GetValueOrDefault("industrial");
-            _balanceLabel.Text =
-                $"Balance: live {Pct(res, zones.TotalAreaSqm)}% · work {Pct(com, zones.TotalAreaSqm)}% · " +
-                $"industry {Pct(ind, zones.TotalAreaSqm)}% · green {greenPct:F0}%";
+            if (denom <= 0)
+            {
+                _greenLabel.Text = $"Green (zones): {zones.TotalGreenAreaSqm:F0} m² — set boundary for %";
+                _balanceLabel.Text = "Balance: set project boundary to compute % of territory";
+                _unzonedLabel.Text = "Without a boundary, percentages of zone sum only (not territory).";
+                // Fall back display to zone sum for chart only
+                denom = zones.TotalAreaSqm;
+            }
+            else
+            {
+                var greenPct = 100.0 * zones.TotalGreenAreaSqm / denom;
+                _greenLabel.Text =
+                    $"Green: {zones.TotalGreenAreaSqm:F0} m² ({greenPct:F1}% of boundary)";
+
+                var res = zones.AreaByType.GetValueOrDefault("residential");
+                var com = zones.AreaByType.GetValueOrDefault("commercial") +
+                          zones.AreaByType.GetValueOrDefault("mixed_use");
+                var ind = zones.AreaByType.GetValueOrDefault("industrial");
+                var greenZone = zones.AreaByType.GetValueOrDefault("green") +
+                                zones.AreaByType.GetValueOrDefault("public");
+                var zonedSum = zones.TotalAreaSqm;
+                var unzoned = Math.Max(0, denom - zonedSum);
+
+                _balanceLabel.Text =
+                    $"Of boundary: live {Pct(res, denom)}% · work {Pct(com, denom)}% · " +
+                    $"industry {Pct(ind, denom)}% · green/public {Pct(greenZone, denom)}%";
+                _unzonedLabel.Text =
+                    $"Unzoned residual: {unzoned:F0} m² ({Pct(unzoned, denom)}% of boundary) · " +
+                    $"zoned {zonedSum:F0} m²";
+            }
 
             _chartData = new Dictionary<string, double>(zones.AreaByType, StringComparer.OrdinalIgnoreCase);
+            if (denom > 0 && zones.TotalAreaSqm < denom)
+                _chartData["unzoned"] = Math.Max(0, denom - zones.TotalAreaSqm);
             _chart.Invalidate();
 
             _areaByType.Text = zones.AreaByType.Count == 0
@@ -235,8 +302,8 @@ public sealed class DashboardTabContent : Panel
                 : string.Join("\n", zones.AreaByType.OrderBy(kv => kv.Key)
                     .Select(kv =>
                     {
-                        var p = zones.TotalAreaSqm > 0 ? 100.0 * kv.Value / zones.TotalAreaSqm : 0;
-                        return $"{kv.Key,-12} {kv.Value,10:F0} m²  ({p:F1}%)";
+                        var p = denom > 0 ? 100.0 * kv.Value / denom : 0;
+                        return $"{kv.Key,-12} {kv.Value,10:F0} m²  ({p:F1}% of boundary)";
                     }));
 
             _staleLabel.Text = zones.RoadSurfacesStale
@@ -255,11 +322,11 @@ public sealed class DashboardTabContent : Panel
                 $"Length: {roads.Stats.TotalLengthM:F1} m\n" +
                 $"Intersections: {roads.Stats.IntersectionCount} · Dead ends: {roads.Stats.DeadEndCount}\n" +
                 $"Components: {roads.Stats.ComponentCount}";
-            var zoneKm2 = (zones?.TotalAreaSqm ?? 0) / 1_000_000.0;
+            var boundaryKm2 = denom / 1_000_000.0;
             var roadKm = roads.Stats.TotalLengthM / 1000.0;
-            _roadDensityLabel.Text = zoneKm2 > 1e-9
-                ? $"Road density: {roadKm / zoneKm2:F2} km/km²"
-                : "Road density: — (no zone area)";
+            _roadDensityLabel.Text = boundaryKm2 > 1e-9
+                ? $"Road density: {roadKm / boundaryKm2:F2} km/km² (vs boundary)"
+                : "Road density: — (set boundary)";
         }
 
         var gfa = _server?.LatestMassingBuiltGfaSqm;
@@ -271,21 +338,21 @@ public sealed class DashboardTabContent : Panel
     private void OnChartPaint(object? sender, PaintEventArgs e)
     {
         var g = e.Graphics;
-        g.Clear(Colors.White);
+        g.Clear(UiTheme.CardBg);
         if (_chartData.Count == 0)
         {
-            g.DrawText(Fonts.Sans(9), Colors.Gray, 8, 8, "No zone area data");
+            g.DrawText(Fonts.Sans(9), UiTheme.Muted, 8, 8, "No data — set boundary & zones");
             return;
         }
 
-        var items = _chartData.OrderByDescending(kv => kv.Value).Take(6).ToList();
+        var items = _chartData.OrderByDescending(kv => kv.Value).Take(7).ToList();
         var max = items.Max(kv => kv.Value);
         if (max <= 0) return;
 
         var pad = 8f;
         var labelW = 72f;
-        var rowH = Math.Min(22f, (e.ClipRectangle.Height - pad * 2) / Math.Max(1, items.Count));
-        var barMax = e.ClipRectangle.Width - pad * 2 - labelW - 40;
+        var rowH = Math.Min(20f, (e.ClipRectangle.Height - pad * 2) / Math.Max(1, items.Count));
+        var barMax = e.ClipRectangle.Width - pad * 2 - labelW - 48;
 
         for (var i = 0; i < items.Count; i++)
         {
@@ -294,8 +361,9 @@ public sealed class DashboardTabContent : Panel
             var barW = (float)(barMax * (kv.Value / max));
             var color = ColorForType(kv.Key);
             g.FillRectangle(color, pad + labelW, y + 2, Math.Max(2, barW), rowH - 4);
-            g.DrawText(Fonts.Sans(8), Colors.Black, pad, y + 2, Truncate(kv.Key, 10));
-            g.DrawText(Fonts.Sans(8), Colors.DimGray, pad + labelW + barW + 4, y + 2, $"{kv.Value:F0}");
+            g.DrawText(Fonts.Sans(8), UiTheme.SectionTitle, pad, y + 2, Truncate(kv.Key, 10));
+            var pct = _boundaryAreaSqm > 0 ? 100.0 * kv.Value / _boundaryAreaSqm : 0;
+            g.DrawText(Fonts.Sans(8), UiTheme.Muted, pad + labelW + barW + 4, y + 2, $"{pct:F0}%");
         }
     }
 
@@ -307,6 +375,7 @@ public sealed class DashboardTabContent : Panel
         "industrial" => Color.FromArgb(170, 170, 180),
         "green" => Color.FromArgb(90, 160, 90),
         "public" => Color.FromArgb(120, 170, 210),
+        "unzoned" => Color.FromArgb(210, 210, 210),
         _ => Color.FromArgb(160, 180, 200),
     };
 
