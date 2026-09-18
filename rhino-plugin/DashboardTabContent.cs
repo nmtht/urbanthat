@@ -6,29 +6,38 @@ using Rhino.Geometry;
 namespace UrbanBridge.Plugin;
 
 /// <summary>
-/// Project dashboard. Land-use balance is always relative to the
-/// project boundary area (not sum of zones).
+/// Project dashboard. Land-use balance relative to project boundary.
+/// All body text is black on white panel.
 /// </summary>
 public sealed class DashboardTabContent : Panel
 {
-    private readonly Label _boundaryLabel = new() { Text = "Boundary: not set" };
+    private readonly Label _boundaryLabel = new() { Text = "Boundary: not set", TextColor = Colors.Black };
     private readonly Label _boundaryAreaLabel = new() { Text = "Boundary area: —", TextColor = UiTheme.Muted };
     private readonly CheckBox _autoUpdate = new()
     {
         Text = "Auto-update ALL geometry",
         Checked = false,
+        TextColor = Colors.Black,
     };
-    private readonly Label _popLabel = new() { Text = "Population: —" };
-    private readonly Label _jobsLabel = new() { Text = "Jobs: —" };
-    private readonly Label _greenLabel = new() { Text = "Green: —" };
-    private readonly Label _roadDensityLabel = new() { Text = "Road density: —" };
-    private readonly Label _builtGfaLabel = new() { Text = "Built floor area: —" };
+    private readonly Label _popLabel = new() { Text = "Population: —", TextColor = Colors.Black };
+    private readonly Label _jobsLabel = new() { Text = "Jobs: —", TextColor = Colors.Black };
+    private readonly Label _greenLabel = new() { Text = "Green: —", TextColor = Colors.Black };
+    private readonly Label _roadDensityLabel = new() { Text = "Road density: —", TextColor = Colors.Black };
+    private readonly Label _builtGfaLabel = new() { Text = "Built floor area: —", TextColor = Colors.Black };
     private readonly Label _staleLabel = new() { Text = "", TextColor = UiTheme.Danger };
-    private readonly Label _balanceLabel = new() { Text = "Balance: —" };
+    private readonly Label _balanceLabel = new() { Text = "Balance: —", TextColor = Colors.Black };
     private readonly Label _unzonedLabel = new() { Text = "", TextColor = UiTheme.Muted };
-    private readonly Drawable _chart = new() { Size = new Size(320, 150), BackgroundColor = UiTheme.CardBg };
-    private readonly TextArea _areaByType = new() { ReadOnly = true, Wrap = true, Height = 90 };
-    private readonly TextArea _roadStats = new() { ReadOnly = true, Wrap = true, Height = 70 };
+    private readonly Drawable _chart = new() { Size = new Size(320, 150), BackgroundColor = Colors.White };
+    private readonly TextArea _areaByType = new()
+    {
+        ReadOnly = true, Wrap = true, Height = 90,
+        TextColor = Colors.Black, BackgroundColor = Colors.White,
+    };
+    private readonly TextArea _roadStats = new()
+    {
+        ReadOnly = true, Wrap = true, Height = 70,
+        TextColor = Colors.Black, BackgroundColor = Colors.White,
+    };
     private readonly Label _xlsHint = new()
     {
         Text = "Export to XLS — planned.",
@@ -43,7 +52,7 @@ public sealed class DashboardTabContent : Panel
 
     public DashboardTabContent()
     {
-        BackgroundColor = UiTheme.PanelBg;
+        BackgroundColor = Colors.White;
         _autoUpdate.Checked = PluginSettings.AutoUpdateGeometry;
         _autoUpdate.CheckedChanged += (_, _) =>
             PluginSettings.AutoUpdateGeometry = _autoUpdate.Checked == true;
@@ -65,7 +74,7 @@ public sealed class DashboardTabContent : Panel
         {
             Text = "Project Dashboard",
             Font = new Font(SystemFont.Bold, 13),
-            TextColor = UiTheme.SectionTitle,
+            TextColor = Colors.Black,
         };
 
         var boundaryBox = new GroupBox
@@ -115,15 +124,25 @@ public sealed class DashboardTabContent : Panel
         });
         root.AddRow(boundaryBox);
         root.AddRow(_staleLabel);
-        root.AddRow(new Label { Text = "Key metrics", Font = new Font(SystemFont.Bold, 10), TextColor = UiTheme.Accent });
+        root.AddRow(new Label
+        {
+            Text = "Key metrics",
+            Font = new Font(SystemFont.Bold, 10),
+            TextColor = Colors.Black,
+        });
         root.AddRow(kpiLayout);
-        root.AddRow(new Label { Text = "Land-use balance (of boundary)", Font = new Font(SystemFont.Bold, 10), TextColor = UiTheme.Accent });
+        root.AddRow(new Label
+        {
+            Text = "Land-use balance (of boundary)",
+            Font = new Font(SystemFont.Bold, 10),
+            TextColor = Colors.Black,
+        });
         root.AddRow(_balanceLabel);
         root.AddRow(_unzonedLabel);
         root.AddRow(_chart);
-        root.AddRow(new Label { Text = "Area by zone_type (inside boundary)" });
+        root.AddRow(new Label { Text = "Area by zone_type (inside boundary)", TextColor = Colors.Black });
         root.AddRow(_areaByType);
-        root.AddRow(new Label { Text = "Road network (inside boundary)" });
+        root.AddRow(new Label { Text = "Road network (inside boundary)", TextColor = Colors.Black });
         root.AddRow(_roadStats);
         root.AddRow(refresh);
         root.AddRow(_xlsHint);
@@ -131,7 +150,7 @@ public sealed class DashboardTabContent : Panel
         Content = new Scrollable
         {
             Border = BorderType.None,
-            BackgroundColor = UiTheme.PanelBg,
+            BackgroundColor = Colors.White,
             Content = root,
         };
 
@@ -208,6 +227,7 @@ public sealed class DashboardTabContent : Panel
         if (PluginSettings.ProjectBoundaryId is { } id)
         {
             _boundaryLabel.Text = $"Boundary: {id.ToString()[..8]}…";
+            _boundaryLabel.TextColor = Colors.Black;
             _boundaryAreaLabel.Text = _boundaryAreaSqm > 0
                 ? $"Boundary area: {_boundaryAreaSqm:F0} m² ({_boundaryAreaSqm / 10_000.0:F2} ha)"
                 : "Boundary area: — (invalid curve)";
@@ -215,6 +235,7 @@ public sealed class DashboardTabContent : Panel
         else
         {
             _boundaryLabel.Text = "Boundary: not set";
+            _boundaryLabel.TextColor = Colors.Black;
             _boundaryAreaLabel.Text = "Set a closed curve — balance % uses it as 100%.";
             _boundaryAreaSqm = 0;
         }
@@ -243,7 +264,7 @@ public sealed class DashboardTabContent : Panel
     private void Apply(ZoneAnalysis? zones, RoadNetworkGraph? roads)
     {
         UpdateBoundaryLabel();
-        var denom = _boundaryAreaSqm; // project territory as 100%
+        var denom = _boundaryAreaSqm;
 
         if (zones is null)
         {
@@ -266,7 +287,6 @@ public sealed class DashboardTabContent : Panel
                 _greenLabel.Text = $"Green (zones): {zones.TotalGreenAreaSqm:F0} m² — set boundary for %";
                 _balanceLabel.Text = "Balance: set project boundary to compute % of territory";
                 _unzonedLabel.Text = "Without a boundary, percentages of zone sum only (not territory).";
-                // Fall back display to zone sum for chart only
                 denom = zones.TotalAreaSqm;
             }
             else
@@ -338,10 +358,10 @@ public sealed class DashboardTabContent : Panel
     private void OnChartPaint(object? sender, PaintEventArgs e)
     {
         var g = e.Graphics;
-        g.Clear(UiTheme.CardBg);
+        g.Clear(Colors.White);
         if (_chartData.Count == 0)
         {
-            g.DrawText(Fonts.Sans(9), UiTheme.Muted, 8, 8, "No data — set boundary & zones");
+            g.DrawText(Fonts.Sans(9), Colors.Black, 8, 8, "No data — set boundary & zones");
             return;
         }
 
@@ -361,9 +381,9 @@ public sealed class DashboardTabContent : Panel
             var barW = (float)(barMax * (kv.Value / max));
             var color = ColorForType(kv.Key);
             g.FillRectangle(color, pad + labelW, y + 2, Math.Max(2, barW), rowH - 4);
-            g.DrawText(Fonts.Sans(8), UiTheme.SectionTitle, pad, y + 2, Truncate(kv.Key, 10));
+            g.DrawText(Fonts.Sans(8), Colors.Black, pad, y + 2, Truncate(kv.Key, 10));
             var pct = _boundaryAreaSqm > 0 ? 100.0 * kv.Value / _boundaryAreaSqm : 0;
-            g.DrawText(Fonts.Sans(8), UiTheme.Muted, pad + labelW + barW + 4, y + 2, $"{pct:F0}%");
+            g.DrawText(Fonts.Sans(8), Colors.Black, pad + labelW + barW + 4, y + 2, $"{pct:F0}%");
         }
     }
 

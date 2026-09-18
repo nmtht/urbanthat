@@ -6,10 +6,18 @@ namespace UrbanBridge.Plugin;
 
 public sealed class ZoneTabContent : Panel
 {
-    private readonly Label _summaryLabel = new() { Text = "Zones: —" };
+    private readonly Label _summaryLabel = new() { Text = "Zones: —", TextColor = Colors.Black };
     private readonly Label _staleLabel = new() { Text = "", TextColor = UiTheme.Danger };
-    private readonly TextArea _zonesText = new() { ReadOnly = true, Wrap = true, Height = 90 };
-    private readonly TextArea _issuesText = new() { ReadOnly = true, Wrap = true, Height = 70 };
+    private readonly TextArea _zonesText = new()
+    {
+        ReadOnly = true, Wrap = true, Height = 90,
+        TextColor = Colors.Black, BackgroundColor = Colors.White,
+    };
+    private readonly TextArea _issuesText = new()
+    {
+        ReadOnly = true, Wrap = true, Height = 70,
+        TextColor = Colors.Black, BackgroundColor = Colors.White,
+    };
     private readonly Label _selectionLabel = new() { Text = "Selected curves: 0", TextColor = UiTheme.Muted };
 
     private readonly UiPresetBar _typePresets;
@@ -27,7 +35,7 @@ public sealed class ZoneTabContent : Panel
 
     public ZoneTabContent()
     {
-        BackgroundColor = UiTheme.PanelBg;
+        BackgroundColor = Colors.White;
 
         _typePresets = new UiPresetBar(ZoneTypeDefaults.ZoneTypes, 0);
         _typePresets.SelectedIndexChanged += (_, _) =>
@@ -56,15 +64,11 @@ public sealed class ZoneTabContent : Panel
         var massingBtn = new Button { Text = "Generate massing + courtyards" };
         massingBtn.Click += (_, _) => GenerateMassing();
 
-        var attrLayout = new DynamicLayout
-        {
-            Padding = 8,
-            Spacing = new Size(6, 6),
-        };
+        var attrLayout = new DynamicLayout { Padding = 8, Spacing = new Size(6, 6) };
         attrLayout.AddRow(_selectionLabel);
-        attrLayout.AddRow(new Label { Text = "zone_type", TextColor = UiTheme.Muted, Font = Fonts.Sans(8) });
+        attrLayout.AddRow(new Label { Text = "zone_type", TextColor = Colors.Black, Font = Fonts.Sans(8) });
         attrLayout.AddRow(_typePresets);
-        attrLayout.AddRow(new Label { Text = "massing_type", TextColor = UiTheme.Muted, Font = Fonts.Sans(8) });
+        attrLayout.AddRow(new Label { Text = "massing_type", TextColor = Colors.Black, Font = Fonts.Sans(8) });
         attrLayout.AddRow(_massingPresets);
         attrLayout.AddRow(_farSlider);
         attrLayout.AddRow(_greenSlider);
@@ -76,40 +80,42 @@ public sealed class ZoneTabContent : Panel
             Rows = { new TableRow(initBtn, applyBtn, readBtn, null) },
         });
 
-        var attrGroup = new GroupBox
-        {
-            Text = "Attributes (selected closed curves)",
-            Content = attrLayout,
-        };
+        var attrGroup = new GroupBox { Text = "Attributes (selected closed curves)", Content = attrLayout };
 
         var genLayout = new DynamicLayout { Padding = 8, Spacing = new Size(4, 4) };
         genLayout.AddRow(proxyBtn);
         genLayout.AddRow(massingBtn);
         genLayout.AddRow(new Label
         {
-            Text = "Presets + sliders write User Text. Apply then Generate.\n" +
+            Text = "Presets + sliders write UserText. Apply then Generate.\n" +
                    "Courtyards scale with green_ratio. Facades → Architecture.",
             TextColor = UiTheme.Muted,
         });
 
         var genGroup = new GroupBox { Text = "Generate", Content = genLayout };
 
-        var root = new DynamicLayout
-        {
-            Padding = 12,
-            Spacing = new Size(8, 6),
-        };
+        var root = new DynamicLayout { Padding = 12, Spacing = new Size(8, 6) };
         root.AddRow(new Label
         {
             Text = "Zoning",
             Font = new Font(SystemFont.Bold, 13),
-            TextColor = UiTheme.SectionTitle,
+            TextColor = Colors.Black,
         });
         root.AddRow(_summaryLabel);
         root.AddRow(_staleLabel);
-        root.AddRow(new Label { Text = "Zones", Font = new Font(SystemFont.Bold, 10), TextColor = UiTheme.Accent });
+        root.AddRow(new Label
+        {
+            Text = "Zones",
+            Font = new Font(SystemFont.Bold, 10),
+            TextColor = Colors.Black,
+        });
         root.AddRow(_zonesText);
-        root.AddRow(new Label { Text = "Issues", Font = new Font(SystemFont.Bold, 10), TextColor = UiTheme.Accent });
+        root.AddRow(new Label
+        {
+            Text = "Issues",
+            Font = new Font(SystemFont.Bold, 10),
+            TextColor = Colors.Black,
+        });
         root.AddRow(_issuesText);
         root.AddRow(attrGroup);
         root.AddRow(genGroup);
@@ -118,7 +124,7 @@ public sealed class ZoneTabContent : Panel
         Content = new Scrollable
         {
             Border = BorderType.None,
-            BackgroundColor = UiTheme.PanelBg,
+            BackgroundColor = Colors.White,
             Content = root,
         };
 
@@ -331,6 +337,7 @@ public sealed class ZoneTabContent : Panel
         _summaryLabel.Text =
             $"Zones: {analysis.Zones.Count} · area {analysis.TotalAreaSqm:F0} m² · " +
             $"pop {analysis.TotalPopulation:F0} · jobs {analysis.TotalJobs:F0}";
+        _summaryLabel.TextColor = Colors.Black;
         if (analysis.RoadSurfacesStale)
             _staleLabel.Text = "⚠ Road surfaces may be outdated — re-run Generate Road Surfaces.";
         else if (analysis.LastRoadSurfaceGenUtc is null)
