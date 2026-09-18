@@ -20,6 +20,7 @@ public sealed class ZoneAnalysisService
         };
 
         var lengthScaleDocToM = RhinoMath.UnitScale(doc.ModelUnitSystem, UnitSystem.Meters);
+        var boundary = ResolveProjectBoundary(doc);
 
         foreach (var obj in doc.Objects)
         {
@@ -27,6 +28,14 @@ public sealed class ZoneAnalysisService
             if (obj.Geometry is not Curve curve) continue;
             if (!IsZonesLayer(doc, obj)) continue;
             if (!curve.IsClosed) continue;
+
+            // Scope to project boundary if set
+            if (boundary is not null)
+            {
+                var center = curve.GetBoundingBox(true).Center;
+                if (boundary.Contains(center, Plane.WorldXY, doc.ModelAbsoluteTolerance) != PointContainment.Inside)
+                    continue;
+            }
 
             var record = ReadZone(obj, curve.DuplicateCurve()!);
             analysis.Zones.Add(record);
@@ -50,6 +59,15 @@ public sealed class ZoneAnalysisService
         return analysis;
     }
 
+    private static Curve? ResolveProjectBoundary(RhinoDoc doc)
+    {
+        if (PluginSettings.ProjectBoundaryId is not { } id) return null;
+        var obj = doc.Objects.FindId(id);
+        if (obj?.Geometry is Curve c && c.IsClosed)
+            return c;
+        return null;
+    }
+
     private static bool IsStale(DateTime? graphChange, DateTime? surfaceGen)
     {
         if (graphChange is null) return false;
@@ -62,6 +80,8 @@ public sealed class ZoneAnalysisService
         var layer = doc.Layers[obj.Attributes.LayerIndex];
         if (layer is null) return false;
         var path = layer.FullPath;
+        if (path.StartsWith("Zones::Proxy", StringComparison.OrdinalIgnoreCase))
+            return false;
         return path.Equals("Zones", StringComparison.OrdinalIgnoreCase) ||
                path.StartsWith("Zones::", StringComparison.OrdinalIgnoreCase);
     }

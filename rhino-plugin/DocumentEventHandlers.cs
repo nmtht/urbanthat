@@ -1,10 +1,9 @@
 using Rhino;
 using Rhino.DocObjects;
-using Rhino.Commands;
 
 namespace UrbanBridge.Plugin;
 
-/// <summary>Document events → bridge upserts + road/zone dirty flags.</summary>
+/// <summary>Document events → bridge upserts + road/zone dirty flags + optional proxy auto-update.</summary>
 public sealed class DocumentEventHandlers
 {
     private readonly BridgeServer _server;
@@ -89,7 +88,8 @@ public sealed class DocumentEventHandlers
             _server.NoteRoadGraphDirty();
             ScheduleRoadRebuild(doc);
         }
-        if (path.StartsWith("Zones", StringComparison.OrdinalIgnoreCase))
+        if (path.StartsWith("Zones", StringComparison.OrdinalIgnoreCase) &&
+            !path.StartsWith("Zones::Proxy", StringComparison.OrdinalIgnoreCase))
             ScheduleZoneRebuild(doc);
     }
 
@@ -113,9 +113,18 @@ public sealed class DocumentEventHandlers
             _zoneDebounce?.Dispose();
             _zoneDebounce = new System.Threading.Timer(_ =>
             {
-                try { _server.RebuildZoneAnalysis(doc); }
+                try
+                {
+                    _server.RebuildZoneAnalysis(doc);
+                    if (PluginSettings.AutoUpdateGeometry &&
+                        _server.LatestZoneAnalysis is { Zones.Count: > 0 } analysis)
+                    {
+                        var n = new ZoneProxyGenerator(doc).RegenerateAll(doc, analysis);
+                        RhinoApp.WriteLine($"[UrbanBridge] Auto proxy update: {n} piece(s).");
+                    }
+                }
                 catch (Exception ex) { RhinoApp.WriteLine($"[UrbanBridge] Zone debounce: {ex.Message}"); }
-            }, null, 400, System.Threading.Timeout.Infinite);
+            }, null, 500, System.Threading.Timeout.Infinite);
         }
     }
 }
