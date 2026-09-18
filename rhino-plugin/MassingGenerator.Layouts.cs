@@ -103,18 +103,19 @@ public sealed partial class MassingGenerator
         Curve envelope, ZoneRecord zone, ZoneAnalysis analysis, Random rng)
     {
         var bbox = envelope.GetBoundingBox(true);
-        var gap = DefaultMinGapM * _metersToDoc;
+        var gap = Math.Max(DefaultMinGapM * (1.0 + zone.GreenRatio), 12.0) * _metersToDoc;
         var amp = AreaMassProperties.Compute(envelope);
         var envArea = amp?.Area ?? 0;
         var envAreaSqm = envArea * _docToMeters * _docToMeters;
 
+        var coverage = DefaultCoverageMax * (1.0 - 0.55 * Math.Clamp(zone.GreenRatio, 0, 1));
         var maxByCoverage = envAreaSqm > 0
-            ? Math.Max(1, (int)(envAreaSqm * DefaultCoverageMax / (DefaultPadSizeM * DefaultPadSizeM)))
+            ? Math.Max(1, (int)(envAreaSqm * coverage / (DefaultPadSizeM * DefaultPadSizeM)))
             : DefaultMaxBuildings;
         var maxPads = Math.Min(DefaultMaxBuildings, maxByCoverage);
 
         var candidates = new List<Curve>();
-        var attempts = maxPads * 20;
+        var attempts = maxPads * 40;
         for (var a = 0; a < attempts && candidates.Count < maxPads; a++)
         {
             var sizeScale = 0.7 + rng.NextDouble() * 0.5;
@@ -132,10 +133,12 @@ public sealed partial class MassingGenerator
             var sq = MakeRect(cx, cy, bbox.Min.Z, half, half, rot);
 
             var ok = true;
+            var bbNew = sq.GetBoundingBox(true);
             foreach (var existing in candidates)
             {
-                var ec = existing.GetBoundingBox(true).Center;
-                if (center.DistanceTo(ec) < gap + half)
+                var bbE = existing.GetBoundingBox(true);
+                if (bbNew.Min.X < bbE.Max.X + gap && bbNew.Max.X > bbE.Min.X - gap &&
+                    bbNew.Min.Y < bbE.Max.Y + gap && bbNew.Max.Y > bbE.Min.Y - gap)
                 {
                     ok = false;
                     break;
@@ -167,18 +170,24 @@ public sealed partial class MassingGenerator
         var result = new List<Curve>();
         var bbox = envelope.GetBoundingBox(true);
         var depth = DefaultBlockDepthM * _metersToDoc;
-        var gap = DefaultMinGapM * _metersToDoc;
+        // Clear street between bars — at least 14 m
+        var gap = Math.Max(DefaultMinGapM, 14.0) * (1.0 + 0.4 * zone.GreenRatio) * _metersToDoc;
         var maxLen = DefaultMaxBarLengthM * _metersToDoc;
         var sizeX = bbox.Max.X - bbox.Min.X;
         var sizeY = bbox.Max.Y - bbox.Min.Y;
         var alongX = sizeX >= sizeY;
 
+        // Start with margin so rows are not glued to one edge
+        var margin = gap * 0.5;
+
         if (alongX)
         {
-            for (var y = bbox.Min.Y + depth * 0.5; y <= bbox.Max.Y - depth * 0.5 && result.Count < DefaultMaxBuildings; y += depth + gap)
+            for (var y = bbox.Min.Y + depth * 0.5 + margin;
+                 y <= bbox.Max.Y - depth * 0.5 - margin && result.Count < DefaultMaxBuildings;
+                 y += depth + gap)
             {
-                var rowStart = bbox.Min.X + gap * 0.25;
-                var rowEnd = bbox.Max.X - gap * 0.25;
+                var rowStart = bbox.Min.X + gap * 0.5;
+                var rowEnd = bbox.Max.X - gap * 0.5;
                 for (var x0 = rowStart; x0 < rowEnd - depth * 0.5 && result.Count < DefaultMaxBuildings; x0 += maxLen + gap)
                 {
                     var x1 = Math.Min(x0 + maxLen, rowEnd);
@@ -189,17 +198,19 @@ public sealed partial class MassingGenerator
                         continue;
                     var halfW = (x1 - x0) * 0.5;
                     var halfD = depth * 0.5;
-                    var rot = (rng.NextDouble() * 2 - 1) * (DefaultRotationJitterDeg * 0.25) * (Math.PI / 180.0);
+                    var rot = (rng.NextDouble() * 2 - 1) * (DefaultRotationJitterDeg * 0.15) * (Math.PI / 180.0);
                     result.Add(MakeRect(cx, y, bbox.Min.Z, halfW, halfD, rot));
                 }
             }
         }
         else
         {
-            for (var x = bbox.Min.X + depth * 0.5; x <= bbox.Max.X - depth * 0.5 && result.Count < DefaultMaxBuildings; x += depth + gap)
+            for (var x = bbox.Min.X + depth * 0.5 + margin;
+                 x <= bbox.Max.X - depth * 0.5 - margin && result.Count < DefaultMaxBuildings;
+                 x += depth + gap)
             {
-                var rowStart = bbox.Min.Y + gap * 0.25;
-                var rowEnd = bbox.Max.Y - gap * 0.25;
+                var rowStart = bbox.Min.Y + gap * 0.5;
+                var rowEnd = bbox.Max.Y - gap * 0.5;
                 for (var y0 = rowStart; y0 < rowEnd - depth * 0.5 && result.Count < DefaultMaxBuildings; y0 += maxLen + gap)
                 {
                     var y1 = Math.Min(y0 + maxLen, rowEnd);
@@ -210,7 +221,7 @@ public sealed partial class MassingGenerator
                         continue;
                     var halfD = depth * 0.5;
                     var halfW = (y1 - y0) * 0.5;
-                    var rot = (rng.NextDouble() * 2 - 1) * (DefaultRotationJitterDeg * 0.25) * (Math.PI / 180.0);
+                    var rot = (rng.NextDouble() * 2 - 1) * (DefaultRotationJitterDeg * 0.15) * (Math.PI / 180.0);
                     result.Add(MakeRect(x, cy, bbox.Min.Z, halfD, halfW, rot));
                 }
             }
@@ -270,8 +281,11 @@ public sealed partial class MassingGenerator
 
     private List<FootprintPad> ClipPadsAwayFromRoads(RhinoDoc doc, List<FootprintPad> pads, double z0)
     {
-        // Roadway only — do not use sidewalk/parking as cutters (too aggressive)
-        var roads = RoadOutlineHelper.CollectPlanarRoadBreps(doc, z0, _docTolerance, includeSidewalkAndParking: false);
+        // Roadway + sidewalk/parking + buffer — buildings must not touch curb
+        var roads = RoadOutlineHelper.CollectPlanarRoadBreps(
+            doc, z0, _docTolerance,
+            includeSidewalkAndParking: true,
+            bufferMeters: RoadOutlineHelper.MassingRoadBufferM);
         if (roads.Count == 0) return pads;
 
         var result = new List<FootprintPad>();
@@ -281,19 +295,12 @@ public sealed partial class MassingGenerator
             {
                 var planar = Brep.CreatePlanarBreps(pad.Curve, _docTolerance);
                 if (planar is null || planar.Length == 0)
-                {
-                    result.Add(pad);
-                    continue;
-                }
+                    continue; // drop invalid
+
                 foreach (var piece in planar)
                 {
                     var remain = RoadOutlineHelper.Subtract(piece, roads, _docTolerance);
-                    if (remain.Count == 0)
-                    {
-                        // clip removed pad entirely — keep original so massing still appears
-                        result.Add(pad);
-                        continue;
-                    }
+                    // NO fallback to original — empty means fully on road, drop it
                     foreach (var r in remain)
                     {
                         if (r is null || !r.IsValid) continue;
@@ -304,21 +311,17 @@ public sealed partial class MassingGenerator
                             if (!loop.IsClosed) loop.MakeClosed(_docTolerance * 10);
                             var amp = AreaMassProperties.Compute(loop);
                             var areaSqm = amp is null ? 0 : amp.Area * _docToMeters * _docToMeters;
-                            if (areaSqm <= 1e-6) continue;
-                            result.Add(new FootprintPad { Curve = loop, AreaSqm = areaSqm });
+                            if (areaSqm < 4.0) continue;
+                            result.Add(new FootprintPad { Curve = loop, AreaSqm = areaSqm, UseTag = pad.UseTag });
                         }
                     }
                 }
             }
             catch
             {
-                result.Add(pad);
+                // drop on failure rather than keep road overlap
             }
         }
-
-        // If somehow empty, fall back to original pads
-        if (result.Count == 0)
-            return pads;
 
         return result;
     }
