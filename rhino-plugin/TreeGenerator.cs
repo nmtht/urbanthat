@@ -79,17 +79,16 @@ public sealed class TreeGenerator
 
         foreach (var p in points)
         {
-            // size jitter
-            var scale = 0.75 + (HashSeed(zone.RhinoObjectId) % 50) / 100.0 * 0.5;
-            scale = 0.75 + new Random(p.GetHashCode()).NextDouble() * 0.5;
+            var scale = 0.75 + new Random(p.GetHashCode()).NextDouble() * 0.5;
 
             var trunk = Mesh.CreateFromCylinder(
                 new Cylinder(new Circle(new Plane(p, Vector3d.ZAxis), trunkR * scale), trunkH * scale),
                 6, 1);
             var crownBase = p + Vector3d.ZAxis * (trunkH * scale * 0.7);
+            // CreateFromCone(cone, vertical, around [, solid])
             var crown = Mesh.CreateFromCone(
                 new Cone(new Plane(crownBase, Vector3d.ZAxis), crownH * scale, crownR * scale),
-                8, true);
+                8, 8, true);
 
             n += AddMesh(doc, trunk, layerIndex, zone.RhinoObjectId, System.Drawing.Color.FromArgb(90, 60, 30));
             n += AddMesh(doc, crown, layerIndex, zone.RhinoObjectId, System.Drawing.Color.FromArgb(40, 130, 55));
