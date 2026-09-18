@@ -1,3 +1,4 @@
+using Eto.Drawing;
 using Eto.Forms;
 using Rhino;
 
@@ -6,119 +7,122 @@ namespace UrbanBridge.Plugin;
 public sealed class ZoneTabContent : Panel
 {
     private readonly Label _summaryLabel = new() { Text = "Zones: —" };
-    private readonly Label _staleLabel = new() { Text = "", TextColor = Eto.Drawing.Colors.DarkOrange };
-    private readonly TextArea _zonesText = new() { ReadOnly = true, Wrap = true, Height = 100 };
-    private readonly TextArea _issuesText = new() { ReadOnly = true, Wrap = true, Height = 80 };
-    private readonly Label _selectionLabel = new() { Text = "Selected curves: 0" };
-    private readonly DropDown _typeDrop = new();
-    private readonly DropDown _massingDrop = new();
-    private readonly TextBox _farBox = new() { Text = "1.5", Width = 80 };
-    private readonly TextBox _heightBox = new() { Text = "24", Width = 80 };
-    private readonly TextBox _setbackBox = new() { Text = "3", Width = 80 };
-    private readonly TextBox _greenBox = new() { Text = "0.25", Width = 80 };
+    private readonly Label _staleLabel = new() { Text = "", TextColor = UiTheme.Danger };
+    private readonly TextArea _zonesText = new() { ReadOnly = true, Wrap = true, Height = 90 };
+    private readonly TextArea _issuesText = new() { ReadOnly = true, Wrap = true, Height = 70 };
+    private readonly Label _selectionLabel = new() { Text = "Selected curves: 0", TextColor = UiTheme.Muted };
+
+    private readonly UiPresetBar _typePresets;
+    private readonly UiPresetBar _massingPresets;
+    private readonly UiValueSlider _farSlider;
+    private readonly UiValueSlider _greenSlider;
+    private readonly UiValueSlider _heightSlider;
+    private readonly UiValueSlider _setbackSlider;
 
     private BridgeServer? _server;
     private readonly object _uiGate = new();
     private System.Threading.Timer? _uiTimer;
     private ZoneAnalysis? _pending;
+    private bool _syncingUi;
 
     public ZoneTabContent()
     {
-        foreach (var t in ZoneTypeDefaults.ZoneTypes)
-            _typeDrop.Items.Add(t);
-        _typeDrop.SelectedIndex = 0;
-        _typeDrop.SelectedIndexChanged += (_, _) => OnTypeChanged();
+        BackgroundColor = UiTheme.PanelBg;
 
-        foreach (var m in MassingGenerator.MassingTypes)
-            _massingDrop.Items.Add(m);
-        _massingDrop.SelectedIndex = 0;
+        _typePresets = new UiPresetBar(ZoneTypeDefaults.ZoneTypes, 0);
+        _typePresets.SelectedIndexChanged += (_, _) =>
+        {
+            if (_syncingUi) return;
+            OnTypeChanged();
+        };
+
+        _massingPresets = new UiPresetBar(MassingGenerator.MassingTypes, 0);
+
+        _farSlider = new UiValueSlider("FAR", 0.2, 6.0, 1.5) { Step = 0.05, FormatString = "0.00" };
+        _greenSlider = new UiValueSlider("Green ratio", 0, 0.9, 0.25) { Step = 0.05, FormatString = "0.00" };
+        _heightSlider = new UiValueSlider("Height max", 6, 80, 24) { Step = 1, Unit = " m", FormatString = "0" };
+        _setbackSlider = new UiValueSlider("Setback", 0, 20, 3) { Step = 0.5, Unit = " m", FormatString = "0.#" };
 
         var initBtn = new Button { Text = "Init as zone" };
         initBtn.Click += (_, _) => InitSelected();
         var applyBtn = new Button { Text = "Apply attributes" };
         applyBtn.Click += (_, _) => ApplySelected();
-        var readBtn = new Button { Text = "Read from selection" };
+        var readBtn = new Button { Text = "Read selection" };
         readBtn.Click += (_, _) => ReadSelection();
-        var refreshBtn = new Button { Text = "Refresh zones" };
+        var refreshBtn = new Button { Text = "Refresh" };
         refreshBtn.Click += (_, _) => Rebuild();
-        var proxyBtn = new Button { Text = "Regenerate zone proxies" };
+        var proxyBtn = new Button { Text = "Regenerate proxies" };
         proxyBtn.Click += (_, _) => RegenerateProxies();
         var massingBtn = new Button { Text = "Generate massing + courtyards" };
         massingBtn.Click += (_, _) => GenerateMassing();
 
+        var attrLayout = new DynamicLayout
+        {
+            Padding = 8,
+            Spacing = new Size(6, 6),
+        };
+        attrLayout.AddRow(_selectionLabel);
+        attrLayout.AddRow(new Label { Text = "zone_type", TextColor = UiTheme.Muted, Font = Fonts.Sans(8) });
+        attrLayout.AddRow(_typePresets);
+        attrLayout.AddRow(new Label { Text = "massing_type", TextColor = UiTheme.Muted, Font = Fonts.Sans(8) });
+        attrLayout.AddRow(_massingPresets);
+        attrLayout.AddRow(_farSlider);
+        attrLayout.AddRow(_greenSlider);
+        attrLayout.AddRow(_heightSlider);
+        attrLayout.AddRow(_setbackSlider);
+        attrLayout.AddRow(new TableLayout
+        {
+            Spacing = new Size(6, 0),
+            Rows = { new TableRow(initBtn, applyBtn, readBtn, null) },
+        });
+
         var attrGroup = new GroupBox
         {
             Text = "Attributes (selected closed curves)",
-            Content = new StackLayout
-            {
-                Padding = 6, Spacing = 4,
-                HorizontalContentAlignment = HorizontalAlignment.Stretch,
-                Items =
-                {
-                    _selectionLabel,
-                    new TableLayout
-                    {
-                        Spacing = new Eto.Drawing.Size(6, 4),
-                        Rows =
-                        {
-                            new TableRow(new Label { Text = "zone_type" }, _typeDrop),
-                            new TableRow(new Label { Text = "massing_type" }, _massingDrop),
-                            new TableRow(new Label { Text = "far" }, _farBox),
-                            new TableRow(new Label { Text = "height_max (m)" }, _heightBox),
-                            new TableRow(new Label { Text = "setback_m" }, _setbackBox),
-                            new TableRow(new Label { Text = "green_ratio" }, _greenBox),
-                        },
-                    },
-                    new StackLayout
-                    {
-                        Orientation = Orientation.Horizontal, Spacing = 6,
-                        Items = { initBtn, applyBtn },
-                    },
-                    readBtn,
-                },
-            },
+            Content = attrLayout,
         };
 
-        var genGroup = new GroupBox
+        var genLayout = new DynamicLayout { Padding = 8, Spacing = new Size(4, 4) };
+        genLayout.AddRow(proxyBtn);
+        genLayout.AddRow(massingBtn);
+        genLayout.AddRow(new Label
         {
-            Text = "Generate",
-            Content = new StackLayout
-            {
-                Padding = 6, Spacing = 4,
-                HorizontalContentAlignment = HorizontalAlignment.Stretch,
-                Items =
-                {
-                    proxyBtn,
-                    massingBtn,
-                    new Label
-                    {
-                        Text = "Apply massing_type first.\n" +
-                               "Massing also builds green courtyards (Landscape::Courtyard):\n" +
-                               "  solid → setback ring · perimeter → inner yard\n" +
-                               "  point/random/row → residual between buildings.\n" +
-                               "Facades/roadside trees → Architecture tab.",
-                        TextColor = Eto.Drawing.Colors.Gray,
-                    },
-                },
-            },
+            Text = "Presets + sliders write User Text. Apply then Generate.\n" +
+                   "Courtyards scale with green_ratio. Facades → Architecture.",
+            TextColor = UiTheme.Muted,
+        });
+
+        var genGroup = new GroupBox { Text = "Generate", Content = genLayout };
+
+        var root = new DynamicLayout
+        {
+            Padding = 12,
+            Spacing = new Size(8, 6),
         };
+        root.AddRow(new Label
+        {
+            Text = "Zoning",
+            Font = new Font(SystemFont.Bold, 13),
+            TextColor = UiTheme.SectionTitle,
+        });
+        root.AddRow(_summaryLabel);
+        root.AddRow(_staleLabel);
+        root.AddRow(new Label { Text = "Zones", Font = new Font(SystemFont.Bold, 10), TextColor = UiTheme.Accent });
+        root.AddRow(_zonesText);
+        root.AddRow(new Label { Text = "Issues", Font = new Font(SystemFont.Bold, 10), TextColor = UiTheme.Accent });
+        root.AddRow(_issuesText);
+        root.AddRow(attrGroup);
+        root.AddRow(genGroup);
+        root.AddRow(refreshBtn);
 
         Content = new Scrollable
         {
             Border = BorderType.None,
-            Content = new StackLayout
-            {
-                Padding = 10, Spacing = 6,
-                HorizontalContentAlignment = HorizontalAlignment.Stretch,
-                Items =
-                {
-                    _summaryLabel, _staleLabel,
-                    new Label { Text = "Zones" }, _zonesText,
-                    new Label { Text = "Issues" }, _issuesText,
-                    attrGroup, genGroup, refreshBtn,
-                },
-            },
+            BackgroundColor = UiTheme.PanelBg,
+            Content = root,
         };
+
+        OnTypeChanged();
     }
 
     public void AttachServer(BridgeServer? server)
@@ -170,26 +174,18 @@ public sealed class ZoneTabContent : Panel
 
     private void OnTypeChanged()
     {
-        var type = SelectedType();
+        var type = _typePresets.SelectedItem;
+        if (string.IsNullOrEmpty(type)) type = "residential";
         var d = ZoneTypeDefaults.Get(type);
-        _farBox.Text = Format(d.Far);
-        _heightBox.Text = Format(d.HeightMaxM);
-        _setbackBox.Text = Format(ZoneTypeDefaults.DefaultSetbackM);
-        _greenBox.Text = Format(d.GreenRatio);
-    }
-
-    private string SelectedType()
-    {
-        if (_typeDrop.SelectedIndex >= 0 && _typeDrop.SelectedIndex < ZoneTypeDefaults.ZoneTypes.Length)
-            return ZoneTypeDefaults.ZoneTypes[_typeDrop.SelectedIndex];
-        return "residential";
-    }
-
-    private string SelectedMassing()
-    {
-        if (_massingDrop.SelectedIndex >= 0 && _massingDrop.SelectedIndex < MassingGenerator.MassingTypes.Length)
-            return MassingGenerator.MassingTypes[_massingDrop.SelectedIndex];
-        return "solid";
+        _syncingUi = true;
+        try
+        {
+            _farSlider.Value = d.Far;
+            _heightSlider.Value = d.HeightMaxM;
+            _setbackSlider.Value = ZoneTypeDefaults.DefaultSetbackM;
+            _greenSlider.Value = d.GreenRatio;
+        }
+        finally { _syncingUi = false; }
     }
 
     private void InitSelected()
@@ -203,7 +199,8 @@ public sealed class ZoneTabContent : Panel
             RhinoApp.WriteLine("[UrbanBridge] Select one or more closed curves first.");
             return;
         }
-        var n = ZoneAttributeHelper.InitAsZone(doc, curves, SelectedType(), SelectedMassing());
+        var n = ZoneAttributeHelper.InitAsZone(
+            doc, curves, _typePresets.SelectedItem, _massingPresets.SelectedItem);
         RhinoApp.WriteLine($"[UrbanBridge] Init as zone: {n} curve(s).");
         Rebuild();
         RegenerateProxies();
@@ -221,13 +218,12 @@ public sealed class ZoneTabContent : Panel
             RhinoApp.WriteLine("[UrbanBridge] Select one or more curves first.");
             return;
         }
-        var type = SelectedType();
-        var far = ParseBox(_farBox, ZoneTypeDefaults.Get(type).Far);
-        var height = ParseBox(_heightBox, ZoneTypeDefaults.Get(type).HeightMaxM);
-        var setback = ParseBox(_setbackBox, ZoneTypeDefaults.DefaultSetbackM);
-        var green = ParseBox(_greenBox, ZoneTypeDefaults.Get(type).GreenRatio);
+        var type = _typePresets.SelectedItem;
+        if (string.IsNullOrEmpty(type)) type = "residential";
         var n = ZoneAttributeHelper.ApplyAttributes(
-            doc, curves, type, far, height, setback, green, SelectedMassing());
+            doc, curves, type,
+            _farSlider.Value, _heightSlider.Value, _setbackSlider.Value, _greenSlider.Value,
+            _massingPresets.SelectedItem);
         RhinoApp.WriteLine($"[UrbanBridge] Applied zone attrs to {n}");
         Rebuild();
         RegenerateProxies();
@@ -242,16 +238,17 @@ public sealed class ZoneTabContent : Panel
         var data = ZoneAttributeHelper.ReadFirst(curves);
         if (data is null) return;
         var (type, far, height, setback, green, massing) = data.Value;
-        var idx = Array.FindIndex(ZoneTypeDefaults.ZoneTypes, t =>
-            t.Equals(type, StringComparison.OrdinalIgnoreCase));
-        if (idx >= 0) _typeDrop.SelectedIndex = idx;
-        var midx = Array.FindIndex(MassingGenerator.MassingTypes, t =>
-            t.Equals(massing, StringComparison.OrdinalIgnoreCase));
-        if (midx >= 0) _massingDrop.SelectedIndex = midx;
-        _farBox.Text = Format(far);
-        _heightBox.Text = Format(height);
-        _setbackBox.Text = Format(setback);
-        _greenBox.Text = Format(green);
+        _syncingUi = true;
+        try
+        {
+            _typePresets.SelectByName(type);
+            _massingPresets.SelectByName(massing);
+            _farSlider.Value = far;
+            _heightSlider.Value = height;
+            _setbackSlider.Value = setback;
+            _greenSlider.Value = green;
+        }
+        finally { _syncingUi = false; }
     }
 
     private void RegenerateProxies()
@@ -362,11 +359,4 @@ public sealed class ZoneTabContent : Panel
         }
         RefreshSelectionLabel();
     }
-
-    private static double ParseBox(TextBox box, double fallback) =>
-        double.TryParse(box.Text, System.Globalization.NumberStyles.Float,
-            System.Globalization.CultureInfo.InvariantCulture, out var v) ? v : fallback;
-
-    private static string Format(double v) =>
-        v.ToString(System.Globalization.CultureInfo.InvariantCulture);
 }
