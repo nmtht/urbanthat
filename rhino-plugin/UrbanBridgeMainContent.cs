@@ -1,9 +1,11 @@
+using Eto.Drawing;
 using Eto.Forms;
 
 namespace UrbanBridge.Plugin;
 
 /// <summary>
 /// Tabs: Dashboard | Roads | Zoning | Architecture.
+/// Forced dark theme independent of Rhino appearance.
 /// </summary>
 public sealed class UrbanBridgeMainContent : Panel
 {
@@ -15,13 +17,19 @@ public sealed class UrbanBridgeMainContent : Panel
 
     public UrbanBridgeMainContent()
     {
-        _tabs = new TabControl();
-        _tabs.Pages.Add(new TabPage { Text = "Dashboard", Content = _dashboard });
-        _tabs.Pages.Add(new TabPage { Text = "Roads", Content = _roads });
-        _tabs.Pages.Add(new TabPage { Text = "Zoning", Content = _zones });
-        _tabs.Pages.Add(new TabPage { Text = "Architecture", Content = _architecture });
+        BackgroundColor = UiTheme.PanelBg;
+
+        _tabs = new TabControl { BackgroundColor = UiTheme.PanelBg };
+        _tabs.Pages.Add(new TabPage { Text = "Dashboard", Content = _dashboard, BackgroundColor = UiTheme.PanelBg });
+        _tabs.Pages.Add(new TabPage { Text = "Roads", Content = _roads, BackgroundColor = UiTheme.PanelBg });
+        _tabs.Pages.Add(new TabPage { Text = "Zoning", Content = _zones, BackgroundColor = UiTheme.PanelBg });
+        _tabs.Pages.Add(new TabPage { Text = "Architecture", Content = _architecture, BackgroundColor = UiTheme.PanelBg });
         _tabs.SelectedIndexChanged += (_, _) => RefreshActiveTab(fromCacheOnly: true);
         Content = _tabs;
+
+        // Re-apply after layout in case platform overrides colors
+        LoadComplete += (_, _) => UiTheme.ApplyDark(this);
+        UiTheme.ApplyDark(this);
     }
 
     public int SelectedTabIndex => _tabs.SelectedIndex;

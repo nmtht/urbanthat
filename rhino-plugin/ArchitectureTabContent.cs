@@ -4,32 +4,32 @@ using Rhino;
 
 namespace UrbanBridge.Plugin;
 
-/// <summary>Architecture: facades, green roof, trees — same DynamicLayout theme as Zoning.</summary>
+/// <summary>Architecture tab — forced dark theme.</summary>
 public sealed class ArchitectureTabContent : Panel
 {
     private readonly CheckBox _greenRoof = new()
     {
         Text = "Green roof on massing tops",
         Checked = false,
-        TextColor = Colors.Black,
+        TextColor = Colors.White,
     };
     private readonly CheckBox _withFacades = new()
     {
         Text = "Include facades with massing",
         Checked = true,
-        TextColor = Colors.Black,
+        TextColor = Colors.White,
     };
     private readonly CheckBox _withTrees = new()
     {
         Text = "Trees in green zones + roadside greenery",
         Checked = true,
-        TextColor = Colors.Black,
+        TextColor = Colors.White,
     };
-    private readonly Label _status = new() { Text = "", TextColor = Colors.Black };
+    private readonly Label _status = new() { Text = "", TextColor = Colors.White };
 
     public ArchitectureTabContent()
     {
-        BackgroundColor = Colors.White;
+        BackgroundColor = UiTheme.PanelBg;
 
         _greenRoof.Checked = PluginSettings.GreenRoof;
         _withFacades.Checked = PluginSettings.GenerateFacadesWithMassing;
@@ -39,14 +39,14 @@ public sealed class ArchitectureTabContent : Panel
         _withFacades.CheckedChanged += (_, _) => PluginSettings.GenerateFacadesWithMassing = _withFacades.Checked == true;
         _withTrees.CheckedChanged += (_, _) => PluginSettings.GenerateTreesForGreenZones = _withTrees.Checked == true;
 
-        var facadesBtn = new Button { Text = "Generate facades (mesh)" };
+        var facadesBtn = new Button { Text = "Generate facades (mesh)", TextColor = Colors.White };
         facadesBtn.Click += (_, _) => RunFacades();
-        var treesBtn = new Button { Text = "Generate trees (mesh)" };
+        var treesBtn = new Button { Text = "Generate trees (mesh)", TextColor = Colors.White };
         treesBtn.Click += (_, _) => RunTrees();
-        var bothBtn = new Button { Text = "Generate facades + trees" };
+        var bothBtn = new Button { Text = "Generate facades + trees", TextColor = Colors.White };
         bothBtn.Click += (_, _) => { RunFacades(); RunTrees(); };
 
-        var optsLayout = new DynamicLayout { Padding = 8, Spacing = new Size(4, 4) };
+        var optsLayout = new DynamicLayout { Padding = 8, Spacing = new Size(4, 4), BackgroundColor = UiTheme.CardBg };
         optsLayout.AddRow(_withFacades);
         optsLayout.AddRow(_greenRoof);
         optsLayout.AddRow(_withTrees);
@@ -54,10 +54,12 @@ public sealed class ArchitectureTabContent : Panel
         var optsGroup = new GroupBox
         {
             Text = "Options",
+            TextColor = Colors.White,
+            BackgroundColor = UiTheme.CardBg,
             Content = optsLayout,
         };
 
-        var genLayout = new DynamicLayout { Padding = 8, Spacing = new Size(4, 4) };
+        var genLayout = new DynamicLayout { Padding = 8, Spacing = new Size(4, 4), BackgroundColor = UiTheme.CardBg };
         genLayout.AddRow(facadesBtn);
         genLayout.AddRow(treesBtn);
         genLayout.AddRow(bothBtn);
@@ -66,6 +68,8 @@ public sealed class ArchitectureTabContent : Panel
         var genGroup = new GroupBox
         {
             Text = "Generate",
+            TextColor = Colors.White,
+            BackgroundColor = UiTheme.CardBg,
             Content = genLayout,
         };
 
@@ -73,12 +77,13 @@ public sealed class ArchitectureTabContent : Panel
         {
             Padding = 12,
             Spacing = new Size(8, 6),
+            BackgroundColor = UiTheme.PanelBg,
         };
         root.AddRow(new Label
         {
             Text = "Architecture",
             Font = new Font(SystemFont.Bold, 13),
-            TextColor = Colors.Black,
+            TextColor = Colors.White,
         });
         root.AddRow(new Label
         {
@@ -92,9 +97,11 @@ public sealed class ArchitectureTabContent : Panel
         Content = new Scrollable
         {
             Border = BorderType.None,
-            BackgroundColor = Colors.White,
+            BackgroundColor = UiTheme.PanelBg,
             Content = root,
         };
+
+        UiTheme.ApplyDark(this);
     }
 
     public void AttachServer(BridgeServer? server) { }
@@ -109,7 +116,7 @@ public sealed class ArchitectureTabContent : Panel
             if (doc is null) return;
             var n = new FacadeGenerator(doc).GenerateFromMassing(doc, PluginSettings.GreenRoof);
             _status.Text = $"Facades/roof meshes: {n}";
-            _status.TextColor = Colors.Black;
+            _status.TextColor = Colors.White;
             RhinoApp.WriteLine($"[UrbanBridge] Facades/roof: {n}");
         }
         catch (Exception ex)
@@ -133,12 +140,12 @@ public sealed class ArchitectureTabContent : Panel
             if (analysis is null)
             {
                 _status.Text = "No zones.";
-                _status.TextColor = Colors.Black;
+                _status.TextColor = Colors.White;
                 return;
             }
             var n = new TreeGenerator(doc).GenerateForGreenZones(doc, analysis);
             _status.Text = $"Tree meshes: {n}";
-            _status.TextColor = Colors.Black;
+            _status.TextColor = Colors.White;
             RhinoApp.WriteLine($"[UrbanBridge] Trees: {n}");
         }
         catch (Exception ex)
