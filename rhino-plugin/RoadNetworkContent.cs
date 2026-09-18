@@ -4,17 +4,14 @@ using Rhino;
 
 namespace UrbanBridge.Plugin;
 
-/// <summary>Roads tab: DynamicLayout + preset chips + value sliders.</summary>
+/// <summary>Roads tab — forced dark theme, white text, presets + sliders.</summary>
 public sealed class RoadNetworkContent : Panel
 {
-    private readonly Label _summaryLabel = new() { Text = "Road network: —", TextColor = Colors.Black };
+    private readonly Label _summaryLabel = new() { Text = "Road network: —", TextColor = Colors.White };
     private readonly TextArea _issuesText = new()
     {
-        ReadOnly = true,
-        Wrap = true,
-        Height = 90,
-        TextColor = Colors.Black,
-        BackgroundColor = Colors.White,
+        ReadOnly = true, Wrap = true, Height = 90,
+        TextColor = Colors.White, BackgroundColor = UiTheme.InputBg,
     };
     private readonly Label _selectionLabel = new() { Text = "Selected curves: 0", TextColor = UiTheme.Muted };
 
@@ -36,7 +33,7 @@ public sealed class RoadNetworkContent : Panel
 
     public RoadNetworkContent()
     {
-        BackgroundColor = Colors.White;
+        BackgroundColor = UiTheme.PanelBg;
 
         _classPresets = new UiPresetBar(RoadAttributeHelper.RoadClasses, 2);
         _classPresets.SelectedIndexChanged += (_, _) =>
@@ -55,24 +52,24 @@ public sealed class RoadNetworkContent : Panel
         _greenStripSlider = new UiValueSlider("Sidewalk green", 0, 4, 0) { Step = 0.25, Unit = " m", FormatString = "0.##" };
         _parkingSlider = new UiValueSlider("Parking strip", 0, 4, 0) { Step = 0.25, Unit = " m", FormatString = "0.##" };
 
-        var initBtn = new Button { Text = "Init as road" };
+        var initBtn = new Button { Text = "Init as road", TextColor = Colors.White };
         initBtn.Click += (_, _) => InitSelected();
-        var applyBtn = new Button { Text = "Apply attributes" };
+        var applyBtn = new Button { Text = "Apply attributes", TextColor = Colors.White };
         applyBtn.Click += (_, _) => ApplySelected();
-        var presetBtn = new Button { Text = "Apply street preset" };
+        var presetBtn = new Button { Text = "Apply street preset", TextColor = Colors.White };
         presetBtn.Click += (_, _) => ApplyPreset();
-        var genBtn = new Button { Text = "Generate Road Surfaces" };
+        var genBtn = new Button { Text = "Generate Road Surfaces", TextColor = Colors.White };
         genBtn.Click += (_, _) => GenerateSurfaces();
-        var refreshBtn = new Button { Text = "Refresh graph" };
+        var refreshBtn = new Button { Text = "Refresh graph", TextColor = Colors.White };
         refreshBtn.Click += (_, _) => RebuildGraph();
 
-        var attrLayout = new DynamicLayout { Padding = 8, Spacing = new Size(6, 6) };
+        var attrLayout = new DynamicLayout { Padding = 8, Spacing = new Size(6, 6), BackgroundColor = UiTheme.CardBg };
         attrLayout.AddRow(_selectionLabel);
-        attrLayout.AddRow(new Label { Text = "road_class", TextColor = Colors.Black, Font = Fonts.Sans(8) });
+        attrLayout.AddRow(new Label { Text = "road_class", TextColor = Colors.White, Font = Fonts.Sans(8) });
         attrLayout.AddRow(_classPresets);
-        attrLayout.AddRow(new Label { Text = "direction", TextColor = Colors.Black, Font = Fonts.Sans(8) });
+        attrLayout.AddRow(new Label { Text = "direction", TextColor = Colors.White, Font = Fonts.Sans(8) });
         attrLayout.AddRow(_dirPresets);
-        attrLayout.AddRow(new Label { Text = "street preset", TextColor = Colors.Black, Font = Fonts.Sans(8) });
+        attrLayout.AddRow(new Label { Text = "street preset", TextColor = Colors.White, Font = Fonts.Sans(8) });
         attrLayout.AddRow(_streetPresets);
         attrLayout.AddRow(_lanesSlider);
         attrLayout.AddRow(_widthSlider);
@@ -89,6 +86,8 @@ public sealed class RoadNetworkContent : Panel
         var attrGroup = new GroupBox
         {
             Text = "Attributes (selected curves)",
+            TextColor = Colors.White,
+            BackgroundColor = UiTheme.CardBg,
             Content = attrLayout,
         };
 
@@ -96,19 +95,20 @@ public sealed class RoadNetworkContent : Panel
         {
             Padding = 12,
             Spacing = new Size(8, 6),
+            BackgroundColor = UiTheme.PanelBg,
         };
         root.AddRow(new Label
         {
             Text = "Roads",
             Font = new Font(SystemFont.Bold, 13),
-            TextColor = Colors.Black,
+            TextColor = Colors.White,
         });
         root.AddRow(_summaryLabel);
         root.AddRow(new Label
         {
             Text = "Issues",
             Font = new Font(SystemFont.Bold, 10),
-            TextColor = Colors.Black,
+            TextColor = Colors.White,
         });
         root.AddRow(_issuesText);
         root.AddRow(attrGroup);
@@ -118,10 +118,11 @@ public sealed class RoadNetworkContent : Panel
         Content = new Scrollable
         {
             Border = BorderType.None,
-            BackgroundColor = Colors.White,
+            BackgroundColor = UiTheme.PanelBg,
             Content = root,
         };
 
+        UiTheme.ApplyDark(this);
         OnClassChanged();
     }
 
@@ -248,7 +249,6 @@ public sealed class RoadNetworkContent : Panel
         var n = RoadAttributeHelper.ApplyPreset(doc, curves, name);
         RhinoApp.WriteLine($"[UrbanBridge] Applied preset {name} to {n}");
 
-        // Reflect preset values in sliders
         if (RoadAttributeHelper.Presets.TryGetValue(name, out var p))
         {
             _syncingUi = true;
@@ -316,7 +316,7 @@ public sealed class RoadNetworkContent : Panel
         _summaryLabel.Text =
             $"Edges: {graph.Edges.Count} · Nodes: {graph.Nodes.Count} · " +
             $"Length: {graph.Stats.TotalLengthM:F1} m · Components: {graph.Stats.ComponentCount}";
-        _summaryLabel.TextColor = Colors.Black;
+        _summaryLabel.TextColor = Colors.White;
 
         if (graph.Issues.Count == 0)
             _issuesText.Text = "No issues.";
