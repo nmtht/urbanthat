@@ -1,100 +1,128 @@
+using Eto.Drawing;
 using Eto.Forms;
 using Rhino;
 
 namespace UrbanBridge.Plugin;
 
-/// <summary>Roads tab: graph stats, issues, Init/Apply road attributes, Generate surfaces.</summary>
+/// <summary>Roads tab: DynamicLayout + preset chips + value sliders.</summary>
 public sealed class RoadNetworkContent : Panel
 {
-    private readonly Label _summaryLabel = new() { Text = "Road network: —" };
-    private readonly TextArea _issuesText = new() { ReadOnly = true, Wrap = true, Height = 100 };
-    private readonly Label _selectionLabel = new() { Text = "Selected curves: 0" };
-    private readonly DropDown _classDrop = new();
-    private readonly TextBox _lanesBox = new() { Text = "2", Width = 60 };
-    private readonly TextBox _widthBox = new() { Text = "8", Width = 60 };
-    private readonly DropDown _dirDrop = new();
-    private readonly TextBox _radiusBox = new() { Text = "4", Width = 60 };
-    private readonly DropDown _presetDrop = new();
+    private readonly Label _summaryLabel = new() { Text = "Road network: —", TextColor = Colors.Black };
+    private readonly TextArea _issuesText = new()
+    {
+        ReadOnly = true,
+        Wrap = true,
+        Height = 90,
+        TextColor = Colors.Black,
+        BackgroundColor = Colors.White,
+    };
+    private readonly Label _selectionLabel = new() { Text = "Selected curves: 0", TextColor = UiTheme.Muted };
+
+    private readonly UiPresetBar _classPresets;
+    private readonly UiPresetBar _dirPresets;
+    private readonly UiPresetBar _streetPresets;
+    private readonly UiValueSlider _lanesSlider;
+    private readonly UiValueSlider _widthSlider;
+    private readonly UiValueSlider _radiusSlider;
+    private readonly UiValueSlider _medianSlider;
+    private readonly UiValueSlider _greenStripSlider;
+    private readonly UiValueSlider _parkingSlider;
 
     private BridgeServer? _server;
     private readonly object _uiGate = new();
     private System.Threading.Timer? _uiTimer;
     private RoadNetworkGraph? _pending;
+    private bool _syncingUi;
 
     public RoadNetworkContent()
     {
-        foreach (var c in RoadAttributeHelper.RoadClasses)
-            _classDrop.Items.Add(c);
-        _classDrop.SelectedIndex = 2; // local
+        BackgroundColor = Colors.White;
 
-        foreach (var d in RoadAttributeHelper.Directions)
-            _dirDrop.Items.Add(d);
-        _dirDrop.SelectedIndex = 0;
+        _classPresets = new UiPresetBar(RoadAttributeHelper.RoadClasses, 2);
+        _classPresets.SelectedIndexChanged += (_, _) =>
+        {
+            if (_syncingUi) return;
+            OnClassChanged();
+        };
 
-        foreach (var p in RoadAttributeHelper.PresetNames)
-            _presetDrop.Items.Add(p);
+        _dirPresets = new UiPresetBar(RoadAttributeHelper.Directions, 0);
+        _streetPresets = new UiPresetBar(RoadAttributeHelper.PresetNames, 0);
+
+        _lanesSlider = new UiValueSlider("Lanes", 0, 6, 2) { Step = 1, FormatString = "0" };
+        _widthSlider = new UiValueSlider("Width", 2, 30, 8) { Step = 0.5, Unit = " m", FormatString = "0.#" };
+        _radiusSlider = new UiValueSlider("Corner radius", 0, 20, 4) { Step = 0.5, Unit = " m", FormatString = "0.#" };
+        _medianSlider = new UiValueSlider("Median", 0, 8, 0) { Step = 0.5, Unit = " m", FormatString = "0.#" };
+        _greenStripSlider = new UiValueSlider("Sidewalk green", 0, 4, 0) { Step = 0.25, Unit = " m", FormatString = "0.##" };
+        _parkingSlider = new UiValueSlider("Parking strip", 0, 4, 0) { Step = 0.25, Unit = " m", FormatString = "0.##" };
 
         var initBtn = new Button { Text = "Init as road" };
         initBtn.Click += (_, _) => InitSelected();
         var applyBtn = new Button { Text = "Apply attributes" };
         applyBtn.Click += (_, _) => ApplySelected();
-        var presetBtn = new Button { Text = "Apply preset" };
+        var presetBtn = new Button { Text = "Apply street preset" };
         presetBtn.Click += (_, _) => ApplyPreset();
         var genBtn = new Button { Text = "Generate Road Surfaces" };
         genBtn.Click += (_, _) => GenerateSurfaces();
         var refreshBtn = new Button { Text = "Refresh graph" };
         refreshBtn.Click += (_, _) => RebuildGraph();
 
+        var attrLayout = new DynamicLayout { Padding = 8, Spacing = new Size(6, 6) };
+        attrLayout.AddRow(_selectionLabel);
+        attrLayout.AddRow(new Label { Text = "road_class", TextColor = Colors.Black, Font = Fonts.Sans(8) });
+        attrLayout.AddRow(_classPresets);
+        attrLayout.AddRow(new Label { Text = "direction", TextColor = Colors.Black, Font = Fonts.Sans(8) });
+        attrLayout.AddRow(_dirPresets);
+        attrLayout.AddRow(new Label { Text = "street preset", TextColor = Colors.Black, Font = Fonts.Sans(8) });
+        attrLayout.AddRow(_streetPresets);
+        attrLayout.AddRow(_lanesSlider);
+        attrLayout.AddRow(_widthSlider);
+        attrLayout.AddRow(_radiusSlider);
+        attrLayout.AddRow(_medianSlider);
+        attrLayout.AddRow(_greenStripSlider);
+        attrLayout.AddRow(_parkingSlider);
+        attrLayout.AddRow(new TableLayout
+        {
+            Spacing = new Size(6, 0),
+            Rows = { new TableRow(initBtn, applyBtn, presetBtn, null) },
+        });
+
         var attrGroup = new GroupBox
         {
             Text = "Attributes (selected curves)",
-            Content = new StackLayout
-            {
-                Padding = 6, Spacing = 4,
-                HorizontalContentAlignment = HorizontalAlignment.Stretch,
-                Items =
-                {
-                    _selectionLabel,
-                    new TableLayout
-                    {
-                        Spacing = new Eto.Drawing.Size(6, 4),
-                        Rows =
-                        {
-                            new TableRow(new Label { Text = "road_class" }, _classDrop),
-                            new TableRow(new Label { Text = "lanes" }, _lanesBox),
-                            new TableRow(new Label { Text = "width_m" }, _widthBox),
-                            new TableRow(new Label { Text = "direction" }, _dirDrop),
-                            new TableRow(new Label { Text = "corner_radius_m" }, _radiusBox),
-                            new TableRow(new Label { Text = "preset" }, _presetDrop),
-                        },
-                    },
-                    new StackLayout
-                    {
-                        Orientation = Orientation.Horizontal, Spacing = 6,
-                        Items = { initBtn, applyBtn, presetBtn },
-                    },
-                },
-            },
+            Content = attrLayout,
         };
+
+        var root = new DynamicLayout
+        {
+            Padding = 12,
+            Spacing = new Size(8, 6),
+        };
+        root.AddRow(new Label
+        {
+            Text = "Roads",
+            Font = new Font(SystemFont.Bold, 13),
+            TextColor = Colors.Black,
+        });
+        root.AddRow(_summaryLabel);
+        root.AddRow(new Label
+        {
+            Text = "Issues",
+            Font = new Font(SystemFont.Bold, 10),
+            TextColor = Colors.Black,
+        });
+        root.AddRow(_issuesText);
+        root.AddRow(attrGroup);
+        root.AddRow(genBtn);
+        root.AddRow(refreshBtn);
 
         Content = new Scrollable
         {
             Border = BorderType.None,
-            Content = new StackLayout
-            {
-                Padding = 10, Spacing = 6,
-                HorizontalContentAlignment = HorizontalAlignment.Stretch,
-                Items =
-                {
-                    _summaryLabel,
-                    new Label { Text = "Issues" },
-                    _issuesText,
-                    attrGroup,
-                    genBtn,
-                    refreshBtn,
-                },
-            },
+            BackgroundColor = Colors.White,
+            Content = root,
         };
+
+        OnClassChanged();
     }
 
     public void AttachServer(BridgeServer? server)
@@ -149,6 +177,21 @@ public sealed class RoadNetworkContent : Panel
         _selectionLabel.Text = $"Selected curves: {n}";
     }
 
+    private void OnClassChanged()
+    {
+        var cls = _classPresets.SelectedItem;
+        if (string.IsNullOrEmpty(cls) || !RoadAttributeHelper.ClassDefaults.TryGetValue(cls, out var d))
+            return;
+        _syncingUi = true;
+        try
+        {
+            _lanesSlider.Value = d.Lanes;
+            _widthSlider.Value = d.WidthM;
+            _radiusSlider.Value = d.CornerRadiusM;
+        }
+        finally { _syncingUi = false; }
+    }
+
     private void InitSelected()
     {
         var doc = RhinoDoc.ActiveDoc;
@@ -160,7 +203,7 @@ public sealed class RoadNetworkContent : Panel
             RhinoApp.WriteLine("[UrbanBridge] Select curves first.");
             return;
         }
-        var cls = SelectedClass();
+        var cls = string.IsNullOrEmpty(_classPresets.SelectedItem) ? "local" : _classPresets.SelectedItem;
         var n = RoadAttributeHelper.InitAsRoad(doc, curves, cls);
         RhinoApp.WriteLine($"[UrbanBridge] Init as road: {n}");
         RebuildGraph();
@@ -177,15 +220,19 @@ public sealed class RoadNetworkContent : Panel
             RhinoApp.WriteLine("[UrbanBridge] Select curves first.");
             return;
         }
-        var cls = SelectedClass();
-        var lanes = int.TryParse(_lanesBox.Text, out var l) ? l : 2;
-        var width = double.TryParse(_widthBox.Text, System.Globalization.NumberStyles.Float,
-            System.Globalization.CultureInfo.InvariantCulture, out var w) ? w : 8;
-        var dir = _dirDrop.SelectedIndex == 1 ? "one_way" : "two_way";
-        var radius = double.TryParse(_radiusBox.Text, System.Globalization.NumberStyles.Float,
-            System.Globalization.CultureInfo.InvariantCulture, out var r) ? r : 4;
+        var cls = string.IsNullOrEmpty(_classPresets.SelectedItem) ? "local" : _classPresets.SelectedItem;
+        var dir = string.Equals(_dirPresets.SelectedItem, "one_way", StringComparison.OrdinalIgnoreCase)
+            ? "one_way" : "two_way";
         var n = RoadAttributeHelper.ApplyAttributes(
-            doc, curves, cls, lanes, width, false, dir, radius, 0, 0, 0);
+            doc, curves, cls,
+            (int)Math.Round(_lanesSlider.Value),
+            _widthSlider.Value,
+            false,
+            dir,
+            _radiusSlider.Value,
+            _medianSlider.Value,
+            _greenStripSlider.Value,
+            _parkingSlider.Value);
         RhinoApp.WriteLine($"[UrbanBridge] Applied road attrs to {n}");
         RebuildGraph();
     }
@@ -195,10 +242,30 @@ public sealed class RoadNetworkContent : Panel
         var doc = RhinoDoc.ActiveDoc;
         if (doc is null) return;
         var curves = RoadAttributeHelper.GetSelectedCurves(doc);
-        if (curves.Count == 0 || _presetDrop.SelectedIndex < 0) return;
-        var name = RoadAttributeHelper.PresetNames[_presetDrop.SelectedIndex];
+        if (curves.Count == 0) return;
+        var name = _streetPresets.SelectedItem;
+        if (string.IsNullOrEmpty(name)) return;
         var n = RoadAttributeHelper.ApplyPreset(doc, curves, name);
         RhinoApp.WriteLine($"[UrbanBridge] Applied preset {name} to {n}");
+
+        // Reflect preset values in sliders
+        if (RoadAttributeHelper.Presets.TryGetValue(name, out var p))
+        {
+            _syncingUi = true;
+            try
+            {
+                _classPresets.SelectByName(p.Class);
+                _dirPresets.SelectByName(p.Direction);
+                _lanesSlider.Value = p.Lanes;
+                _widthSlider.Value = p.WidthM;
+                _radiusSlider.Value = p.CornerRadiusM;
+                _medianSlider.Value = p.MedianM;
+                _greenStripSlider.Value = p.SidewalkGreenM;
+                _parkingSlider.Value = p.ParkingM;
+            }
+            finally { _syncingUi = false; }
+        }
+
         RebuildGraph();
     }
 
@@ -235,13 +302,6 @@ public sealed class RoadNetworkContent : Panel
         }
     }
 
-    private string SelectedClass()
-    {
-        if (_classDrop.SelectedIndex >= 0 && _classDrop.SelectedIndex < RoadAttributeHelper.RoadClasses.Length)
-            return RoadAttributeHelper.RoadClasses[_classDrop.SelectedIndex];
-        return "local";
-    }
-
     private void OnUpdated(RoadNetworkGraph graph)
     {
         _pending = graph;
@@ -256,6 +316,7 @@ public sealed class RoadNetworkContent : Panel
         _summaryLabel.Text =
             $"Edges: {graph.Edges.Count} · Nodes: {graph.Nodes.Count} · " +
             $"Length: {graph.Stats.TotalLengthM:F1} m · Components: {graph.Stats.ComponentCount}";
+        _summaryLabel.TextColor = Colors.Black;
 
         if (graph.Issues.Count == 0)
             _issuesText.Text = "No issues.";

@@ -3,11 +3,12 @@ using Eto.Drawing;
 namespace UrbanBridge.Plugin;
 
 /// <summary>
-/// Accent palette for custom Drawable controls (pastel hierarchy via saturation/lightness).
+/// Accent palette for custom Drawable controls.
+/// Rule: on white/light panel backgrounds all body text is black.
 /// </summary>
 public static class UiTheme
 {
-    /// <summary>Primary accent (teal-blue).</summary>
+    /// <summary>Primary accent (teal-blue) — for chips, fills, section headers only.</summary>
     public static readonly Color Accent = Color.FromArgb(45, 125, 160);
 
     public static Color AccentLight => Lighten(Accent, 0.35f);
@@ -22,18 +23,24 @@ public static class UiTheme
     public static Color ChipIdle => Color.FromArgb(235, 240, 243);
     public static Color ChipHover => AccentSoft;
     public static Color ChipSelected => Accent;
-    public static Color ChipText => Color.FromArgb(40, 50, 55);
+    public static Color ChipText => Colors.Black;
     public static Color ChipTextOn => Colors.White;
 
-    public static Color SectionTitle => Color.FromArgb(35, 45, 50);
-    public static Color Muted => Color.FromArgb(120, 130, 135);
-    public static Color PanelBg => Color.FromArgb(248, 249, 250);
+    /// <summary>Primary body / title text on light backgrounds — always black.</summary>
+    public static Color Text => Colors.Black;
+
+    /// <summary>Section titles — black (accent used only as underline/icon, not body).</summary>
+    public static Color SectionTitle => Colors.Black;
+
+    /// <summary>Secondary hints — dark gray (still readable on white).</summary>
+    public static Color Muted => Color.FromArgb(70, 70, 70);
+
+    public static Color PanelBg => Colors.White;
     public static Color CardBg => Colors.White;
-    public static Color Danger => Color.FromArgb(190, 90, 60);
+    public static Color Danger => Color.FromArgb(180, 40, 30);
 
     public static Color Soften(Color c, float amount)
     {
-        // Blend toward white
         amount = Math.Clamp(amount, 0, 1);
         return Color.FromArgb(
             (int)(c.Rb + (255 - c.Rb) * amount),

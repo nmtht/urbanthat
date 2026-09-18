@@ -5,7 +5,7 @@ namespace UrbanBridge.Plugin;
 
 /// <summary>
 /// Drawable horizontal value slider (drag via MouseDown/Move).
-/// Used for FAR / green_ratio / height.
+/// Labels and values drawn in black on light track.
 /// </summary>
 public sealed class UiValueSlider : Drawable
 {
@@ -41,6 +41,7 @@ public sealed class UiValueSlider : Drawable
         Maximum = max;
         _value = Math.Clamp(initial, min, max);
         Size = new Size(280, 36);
+        BackgroundColor = Colors.White;
         Cursor = Cursors.Pointer;
 
         MouseDown += OnMouseDown;
@@ -53,17 +54,17 @@ public sealed class UiValueSlider : Drawable
     {
         var g = e.Graphics;
         g.AntiAlias = true;
+        g.Clear(Colors.White);
 
         var labelFont = Fonts.Sans(8);
         var valueFont = Fonts.Sans(9);
 
-        // Label + value
-        g.DrawText(labelFont, UiTheme.Muted, 0, 0, _label);
+        // Black text on white
+        g.DrawText(labelFont, Colors.Black, 0, 0, _label);
         var valueText = _value.ToString(FormatString, System.Globalization.CultureInfo.InvariantCulture) + Unit;
         var vw = g.MeasureString(valueFont, valueText).Width;
-        g.DrawText(valueFont, UiTheme.SectionTitle, Width - vw - 2, 0, valueText);
+        g.DrawText(valueFont, Colors.Black, Width - vw - 2, 0, valueText);
 
-        // Track
         var trackY = 20f;
         var trackH = 6f;
         var trackX = 4f;
@@ -76,7 +77,6 @@ public sealed class UiValueSlider : Drawable
         if (fillW > 0)
             g.FillRectangle(UiTheme.TrackFill, trackX, trackY, fillW, trackH);
 
-        // Thumb
         var thumbR = 8f;
         var cx = trackX + fillW;
         var cy = trackY + trackH * 0.5f;
