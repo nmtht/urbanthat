@@ -172,7 +172,9 @@ public sealed class CourtyardGenerator
             {
                 try
                 {
-                    var diff = Brep.CreateBooleanDifference(piece, cutters, _tol);
+                    // Overload requires IEnumerable + IEnumerable (not Brep + Brep[])
+                    var diff = Brep.CreateBooleanDifference(
+                        new[] { piece }, cutters, _tol);
                     if (diff is { Length: > 0 })
                         next.AddRange(diff);
                     else if (diff is null)
