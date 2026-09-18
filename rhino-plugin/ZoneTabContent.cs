@@ -16,8 +16,6 @@ public sealed class ZoneTabContent : Panel
     private readonly TextBox _heightBox = new() { Text = "24", Width = 80 };
     private readonly TextBox _setbackBox = new() { Text = "3", Width = 80 };
     private readonly TextBox _greenBox = new() { Text = "0.25", Width = 80 };
-    private readonly CheckBox _withFacades = new() { Text = "Facades after massing", Checked = true };
-    private readonly CheckBox _withTrees = new() { Text = "Trees in green zones", Checked = true };
 
     private BridgeServer? _server;
     private readonly object _uiGate = new();
@@ -35,11 +33,6 @@ public sealed class ZoneTabContent : Panel
             _massingDrop.Items.Add(m);
         _massingDrop.SelectedIndex = 0;
 
-        _withFacades.CheckedChanged += (_, _) =>
-            PluginSettings.GenerateFacadesWithMassing = _withFacades.Checked == true;
-        _withTrees.CheckedChanged += (_, _) =>
-            PluginSettings.GenerateTreesForGreenZones = _withTrees.Checked == true;
-
         var initBtn = new Button { Text = "Init as zone" };
         initBtn.Click += (_, _) => InitSelected();
         var applyBtn = new Button { Text = "Apply attributes" };
@@ -52,10 +45,6 @@ public sealed class ZoneTabContent : Panel
         proxyBtn.Click += (_, _) => RegenerateProxies();
         var massingBtn = new Button { Text = "Generate massing" };
         massingBtn.Click += (_, _) => GenerateMassing();
-        var facadeBtn = new Button { Text = "Generate facades only" };
-        facadeBtn.Click += (_, _) => GenerateFacades();
-        var treesBtn = new Button { Text = "Generate trees only" };
-        treesBtn.Click += (_, _) => GenerateTrees();
 
         var attrGroup = new GroupBox
         {
@@ -101,17 +90,10 @@ public sealed class ZoneTabContent : Panel
                 {
                     proxyBtn,
                     massingBtn,
-                    _withFacades,
-                    _withTrees,
-                    new StackLayout
-                    {
-                        Orientation = Orientation.Horizontal, Spacing = 6,
-                        Items = { facadeBtn, treesBtn },
-                    },
                     new Label
                     {
-                        Text = "Proxies · massing (Apply type first!) · optional window grid · green trees.\n" +
-                               "Facades: Buildings::Facades · Trees: Landscape::Trees",
+                        Text = "Apply massing_type first. Facades/trees → Architecture tab.\n" +
+                               "Massing footprints are clipped away from roadway.",
                         TextColor = Eto.Drawing.Colors.Gray,
                     },
                 },
@@ -218,7 +200,6 @@ public sealed class ZoneTabContent : Panel
             RhinoApp.WriteLine("[UrbanBridge] Select one or more closed curves first.");
             return;
         }
-
         var n = ZoneAttributeHelper.InitAsZone(doc, curves, SelectedType(), SelectedMassing());
         RhinoApp.WriteLine($"[UrbanBridge] Init as zone: {n} curve(s).");
         Rebuild();
@@ -237,7 +218,6 @@ public sealed class ZoneTabContent : Panel
             RhinoApp.WriteLine("[UrbanBridge] Select one or more curves first.");
             return;
         }
-
         var type = SelectedType();
         var far = ParseBox(_farBox, ZoneTypeDefaults.Get(type).Far);
         var height = ParseBox(_heightBox, ZoneTypeDefaults.Get(type).HeightMaxM);
@@ -258,16 +238,13 @@ public sealed class ZoneTabContent : Panel
         RefreshSelectionLabel();
         var data = ZoneAttributeHelper.ReadFirst(curves);
         if (data is null) return;
-
         var (type, far, height, setback, green, massing) = data.Value;
         var idx = Array.FindIndex(ZoneTypeDefaults.ZoneTypes, t =>
             t.Equals(type, StringComparison.OrdinalIgnoreCase));
         if (idx >= 0) _typeDrop.SelectedIndex = idx;
-
         var midx = Array.FindIndex(MassingGenerator.MassingTypes, t =>
             t.Equals(massing, StringComparison.OrdinalIgnoreCase));
         if (midx >= 0) _massingDrop.SelectedIndex = midx;
-
         _farBox.Text = Format(far);
         _heightBox.Text = Format(height);
         _setbackBox.Text = Format(setback);
@@ -282,7 +259,6 @@ public sealed class ZoneTabContent : Panel
             if (doc is null) return;
             var server = UrbanBridgePlugin.Instance?.Server;
             if (server is null) return;
-
             server.RebuildZoneAnalysis(doc);
             var analysis = server.LatestZoneAnalysis;
             if (analysis is null || analysis.Zones.Count == 0)
@@ -290,7 +266,6 @@ public sealed class ZoneTabContent : Panel
                 RhinoApp.WriteLine("[UrbanBridge] No zones for proxies.");
                 return;
             }
-
             var n = new ZoneProxyGenerator(doc).RegenerateAll(doc, analysis);
             RhinoApp.WriteLine($"[UrbanBridge] Zone proxies: {n} piece(s).");
         }
@@ -312,7 +287,6 @@ public sealed class ZoneTabContent : Panel
                 RhinoApp.WriteLine("[UrbanBridge] Plugin server not running.");
                 return;
             }
-
             server.RebuildZoneAnalysis(doc);
             var analysis = server.LatestZoneAnalysis;
             if (analysis is null || analysis.Zones.Count == 0)
@@ -320,69 +294,26 @@ public sealed class ZoneTabContent : Panel
                 RhinoApp.WriteLine("[UrbanBridge] No zones. Init closed curves as zones first.");
                 return;
             }
-
             var batch = new MassingGenerator(doc).Generate(doc, analysis);
             server.LatestMassingBuiltGfaSqm = batch.TotalBuiltFloorAreaSqm;
             RhinoApp.WriteLine(
                 $"[UrbanBridge] Massing: created {batch.CreatedCount}, deleted {batch.DeletedCount}, " +
                 $"GFA {batch.TotalBuiltFloorAreaSqm:F0} m²");
-
             if (PluginSettings.GenerateFacadesWithMassing)
             {
-                var fn = new FacadeGenerator(doc).GenerateFromMassing(doc);
-                RhinoApp.WriteLine($"[UrbanBridge] Facades: {fn} window outline(s).");
+                var fn = new FacadeGenerator(doc).GenerateFromMassing(doc, PluginSettings.GreenRoof);
+                RhinoApp.WriteLine($"[UrbanBridge] Facades/roof: {fn}");
             }
-
             if (PluginSettings.GenerateTreesForGreenZones)
             {
                 var tn = new TreeGenerator(doc).GenerateForGreenZones(doc, analysis);
-                RhinoApp.WriteLine($"[UrbanBridge] Trees: {tn} mesh part(s).");
+                RhinoApp.WriteLine($"[UrbanBridge] Trees: {tn}");
             }
-
             PaintFromCache();
         }
         catch (Exception ex)
         {
             RhinoApp.WriteLine($"[UrbanBridge] Massing failed: {ex.Message}");
-        }
-    }
-
-    private void GenerateFacades()
-    {
-        try
-        {
-            var doc = RhinoDoc.ActiveDoc;
-            if (doc is null) return;
-            var n = new FacadeGenerator(doc).GenerateFromMassing(doc);
-            RhinoApp.WriteLine($"[UrbanBridge] Facades: {n} window outline(s).");
-        }
-        catch (Exception ex)
-        {
-            RhinoApp.WriteLine($"[UrbanBridge] Facades failed: {ex.Message}");
-        }
-    }
-
-    private void GenerateTrees()
-    {
-        try
-        {
-            var doc = RhinoDoc.ActiveDoc;
-            if (doc is null) return;
-            var server = UrbanBridgePlugin.Instance?.Server;
-            if (server is null) return;
-            server.RebuildZoneAnalysis(doc);
-            var analysis = server.LatestZoneAnalysis;
-            if (analysis is null)
-            {
-                RhinoApp.WriteLine("[UrbanBridge] No zone analysis.");
-                return;
-            }
-            var n = new TreeGenerator(doc).GenerateForGreenZones(doc, analysis);
-            RhinoApp.WriteLine($"[UrbanBridge] Trees: {n} mesh part(s).");
-        }
-        catch (Exception ex)
-        {
-            RhinoApp.WriteLine($"[UrbanBridge] Trees failed: {ex.Message}");
         }
     }
 
@@ -400,14 +331,12 @@ public sealed class ZoneTabContent : Panel
         _summaryLabel.Text =
             $"Zones: {analysis.Zones.Count} · area {analysis.TotalAreaSqm:F0} m² · " +
             $"pop {analysis.TotalPopulation:F0} · jobs {analysis.TotalJobs:F0}";
-
         if (analysis.RoadSurfacesStale)
             _staleLabel.Text = "⚠ Road surfaces may be outdated — re-run Generate Road Surfaces.";
         else if (analysis.LastRoadSurfaceGenUtc is null)
             _staleLabel.Text = "Road surfaces not generated yet (needed for proxy clip / road access).";
         else
             _staleLabel.Text = "";
-
         if (analysis.Zones.Count == 0)
             _zonesText.Text = "No closed curves on Zones. Select curves → Init as zone.";
         else
@@ -419,7 +348,6 @@ public sealed class ZoneTabContent : Panel
             });
             _zonesText.Text = UiInvoke.FormatCappedLines(lines, 50);
         }
-
         if (analysis.Issues.Count == 0)
             _issuesText.Text = "No issues.";
         else
@@ -429,7 +357,6 @@ public sealed class ZoneTabContent : Panel
                 .Select(i => $"[{i.Severity}] {i.Type}: {i.Message}");
             _issuesText.Text = UiInvoke.FormatCappedLines(lines);
         }
-
         RefreshSelectionLabel();
     }
 
