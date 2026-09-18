@@ -4,10 +4,17 @@ using Rhino.Geometry;
 
 namespace UrbanBridge.Plugin;
 
-/// <summary>Collect planar road footprints (XY) for clipping zones/massing.</summary>
+/// <summary>
+/// Collect planar horizontal road footprints (XY) for clipping zones/massing.
+/// Only nearly-horizontal faces on Roadway (and optionally Sidewalk/Parking).
+/// </summary>
 public static class RoadOutlineHelper
 {
-    public static List<Brep> CollectPlanarRoadBreps(RhinoDoc doc, double z, double tol)
+    public static List<Brep> CollectPlanarRoadBreps(
+        RhinoDoc doc,
+        double z,
+        double tol,
+        bool includeSidewalkAndParking = true)
     {
         var curves = new List<Curve>();
         foreach (var obj in doc.Objects)
@@ -16,9 +23,11 @@ public static class RoadOutlineHelper
             var layer = doc.Layers[obj.Attributes.LayerIndex];
             if (layer is null) continue;
             var path = layer.FullPath;
-            if (!path.Equals(RoadSurfaceGenerator.LayerRoadway, StringComparison.OrdinalIgnoreCase) &&
-                !path.Equals(RoadSurfaceGenerator.LayerSidewalk, StringComparison.OrdinalIgnoreCase) &&
-                !path.Equals(RoadSurfaceGenerator.LayerParking, StringComparison.OrdinalIgnoreCase))
+
+            var isRoadway = path.Equals(RoadSurfaceGenerator.LayerRoadway, StringComparison.OrdinalIgnoreCase);
+            var isSide = path.Equals(RoadSurfaceGenerator.LayerSidewalk, StringComparison.OrdinalIgnoreCase);
+            var isPark = path.Equals(RoadSurfaceGenerator.LayerParking, StringComparison.OrdinalIgnoreCase);
+            if (!isRoadway && !(includeSidewalkAndParking && (isSide || isPark)))
                 continue;
 
             Brep? brep = obj.Geometry switch
@@ -33,6 +42,12 @@ public static class RoadOutlineHelper
             {
                 try
                 {
+                    if (!face.FrameAt(face.Domain(0).Mid, face.Domain(1).Mid, out var frame))
+                        continue;
+                    // Only top/bottom-ish faces — skip vertical walls
+                    if (Math.Abs(frame.ZAxis.Z) < 0.85)
+                        continue;
+
                     var loop = face.OuterLoop?.To3dCurve();
                     if (loop is null || !loop.IsValid) continue;
                     var flat = loop.DuplicateCurve();
@@ -40,8 +55,14 @@ public static class RoadOutlineHelper
                     flat.Transform(Transform.PlanarProjection(new Plane(new Point3d(0, 0, z), Vector3d.ZAxis)));
                     if (!flat.IsClosed)
                         flat.MakeClosed(tol * 10);
-                    if (flat.IsClosed)
-                        curves.Add(flat);
+                    if (!flat.IsClosed || !flat.IsValid) continue;
+
+                    // Skip degenerate tiny loops
+                    var amp = AreaMassProperties.Compute(flat);
+                    if (amp is null || amp.Area < tol * tol * 10)
+                        continue;
+
+                    curves.Add(flat);
                 }
                 catch { }
             }
@@ -81,11 +102,11 @@ public static class RoadOutlineHelper
                         next.AddRange(diff);
                     else if (diff is { Length: 0 })
                     {
-                        // fully subtracted — drop piece
+                        // fully inside cutter — drop
                     }
                     else
                     {
-                        // null = failure — keep original
+                        // null = boolean failed — keep original
                         next.Add(piece);
                     }
                 }

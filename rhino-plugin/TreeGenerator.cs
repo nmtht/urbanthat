@@ -4,7 +4,10 @@ using Rhino.Geometry;
 
 namespace UrbanBridge.Plugin;
 
-/// <summary>Primitive trees (trunk cylinder + oval crown sphere) in green zones and roadside greenery.</summary>
+/// <summary>
+/// Primitive trees (trunk cylinder + oval crown) in green zones and along median greenery strips.
+/// Roadside trees are placed on the strip centerline, only if point is inside the greenery outline.
+/// </summary>
 public sealed class TreeGenerator
 {
     public const string LayerTrees = "Landscape::Trees";
@@ -14,6 +17,7 @@ public sealed class TreeGenerator
     private const double TrunkHeightM = 2.2;
     private const double CrownRadiusM = 2.2;
     private const int MaxTreesPerZone = 40;
+    private const double RoadsideGapM = 8.0;
 
     private readonly double _tol;
     private readonly double _m2d;
@@ -37,17 +41,21 @@ public sealed class TreeGenerator
             created += ScatterInCurve(doc, zone.Boundary, zone.RhinoObjectId, layer, MaxTreesPerZone);
         }
 
-        // Trees along greenery strips
-        created += ScatterOnGreeneryBreps(doc, layer);
+        created += ScatterAlongGreeneryStrips(doc, layer);
 
+        RhinoApp.WriteLine($"[UrbanBridge] Trees: {created} mesh parts.");
         doc.Views.Redraw();
         return created;
     }
 
-    private int ScatterOnGreeneryBreps(RhinoDoc doc, int layerIndex)
+    /// <summary>
+    /// Place trees in a row along the center of each Roads::Surface::Greenery planar strip.
+    /// Point must lie Inside the outer loop of the greenery face.
+    /// </summary>
+    private int ScatterAlongGreeneryStrips(RhinoDoc doc, int layerIndex)
     {
         var n = 0;
-        var gap = MinGapM * _m2d;
+        var gap = RoadsideGapM * _m2d;
         var placed = new List<Point3d>();
 
         foreach (var obj in doc.Objects)
@@ -66,25 +74,82 @@ public sealed class TreeGenerator
             };
             if (brep is null) continue;
 
-            var bb = brep.GetBoundingBox(true);
-            var rng = new Random(obj.Id.GetHashCode());
-            for (var a = 0; a < 30 && placed.Count < 200; a++)
+            foreach (var face in brep.Faces)
             {
-                var p = new Point3d(
-                    bb.Min.X + rng.NextDouble() * (bb.Max.X - bb.Min.X),
-                    bb.Min.Y + rng.NextDouble() * (bb.Max.Y - bb.Min.Y),
-                    bb.Min.Z);
-                // rough inside bbox only; greenery strips are narrow
-                if (p.DistanceTo(bb.Center) > bb.Diagonal.Length * 0.6) continue;
-                var ok = true;
-                foreach (var q in placed)
-                    if (p.DistanceTo(q) < gap) { ok = false; break; }
-                if (!ok) continue;
-                placed.Add(p);
-                n += PlaceTree(doc, p, layerIndex, obj.Id, 0.7 + rng.NextDouble() * 0.4);
+                if (!face.FrameAt(face.Domain(0).Mid, face.Domain(1).Mid, out var frame))
+                    continue;
+                if (Math.Abs(frame.ZAxis.Z) < 0.85) continue;
+
+                var loop = face.OuterLoop?.To3dCurve();
+                if (loop is null || !loop.IsValid) continue;
+                if (!loop.IsClosed)
+                    loop.MakeClosed(_tol * 10);
+                if (!loop.IsClosed) continue;
+
+                n += PlaceAlongStripCenterline(doc, loop, layerIndex, obj.Id, gap, placed);
             }
         }
+
         return n;
+    }
+
+    private int PlaceAlongStripCenterline(
+        RhinoDoc doc, Curve outline, int layerIndex, Guid sourceId, double gap, List<Point3d> placed)
+    {
+        var bb = outline.GetBoundingBox(true);
+        var z0 = bb.Min.Z;
+        var dx = bb.Max.X - bb.Min.X;
+        var dy = bb.Max.Y - bb.Min.Y;
+        if (dx < _tol * 10 && dy < _tol * 10) return 0;
+
+        // Centerline along the longer axis of the strip bbox
+        Point3d a, b;
+        if (dx >= dy)
+        {
+            var midY = (bb.Min.Y + bb.Max.Y) * 0.5;
+            a = new Point3d(bb.Min.X, midY, z0);
+            b = new Point3d(bb.Max.X, midY, z0);
+        }
+        else
+        {
+            var midX = (bb.Min.X + bb.Max.X) * 0.5;
+            a = new Point3d(midX, bb.Min.Y, z0);
+            b = new Point3d(midX, bb.Max.Y, z0);
+        }
+
+        var axis = b - a;
+        var length = axis.Length;
+        if (length < gap) return 0;
+        axis.Unitize();
+
+        var rng = new Random(sourceId.GetHashCode());
+        var count = 0;
+        // Start half-gap from ends so trees stay on the strip
+        for (var d = gap * 0.5; d <= length - gap * 0.5; d += gap)
+        {
+            var p = a + axis * d;
+            p.Z = z0;
+
+            if (outline.Contains(p, Plane.WorldXY, _tol) != PointContainment.Inside)
+                continue;
+
+            var ok = true;
+            foreach (var q in placed)
+            {
+                if (p.DistanceTo(q) < gap * 0.9)
+                {
+                    ok = false;
+                    break;
+                }
+            }
+            if (!ok) continue;
+
+            placed.Add(p);
+            var scale = 0.7 + rng.NextDouble() * 0.35;
+            count += PlaceTree(doc, p, layerIndex, sourceId, scale);
+        }
+
+        return count;
     }
 
     private int ScatterInCurve(RhinoDoc doc, Curve boundary, Guid zoneId, int layerIndex, int maxTrees)
@@ -108,7 +173,13 @@ public sealed class TreeGenerator
 
             var ok = true;
             foreach (var q in points)
-                if (p.DistanceTo(q) < gap) { ok = false; break; }
+            {
+                if (p.DistanceTo(q) < gap)
+                {
+                    ok = false;
+                    break;
+                }
+            }
             if (!ok) continue;
             points.Add(p);
         }
@@ -132,7 +203,6 @@ public sealed class TreeGenerator
             new Cylinder(new Circle(new Plane(p, Vector3d.ZAxis), trunkR), trunkH),
             6, 8);
 
-        // Oval crown: sphere scaled in Z (slightly flatter)
         var crownCenter = p + Vector3d.ZAxis * (trunkH * 0.85 + crownR * 0.35);
         var sphere = Mesh.CreateFromSphere(new Sphere(crownCenter, crownR), 10, 10);
         if (sphere is not null)
@@ -178,6 +248,7 @@ public sealed class TreeGenerator
             if (layer.FullPath.Equals(fullPath, StringComparison.OrdinalIgnoreCase))
                 return i;
         }
+
         var parts = fullPath.Split(new[] { "::" }, StringSplitOptions.None);
         var parentIndex = -1;
         var built = "";
@@ -195,12 +266,20 @@ public sealed class TreeGenerator
                     break;
                 }
             }
-            if (found >= 0) { parentIndex = found; continue; }
+            if (found >= 0)
+            {
+                parentIndex = found;
+                continue;
+            }
+
             var newLayer = new Layer { Name = parts[p] };
-            if (parentIndex >= 0) newLayer.ParentLayerId = doc.Layers[parentIndex].Id;
-            if (p == parts.Length - 1) newLayer.Color = color;
+            if (parentIndex >= 0)
+                newLayer.ParentLayerId = doc.Layers[parentIndex].Id;
+            if (p == parts.Length - 1)
+                newLayer.Color = color;
             parentIndex = doc.Layers.Add(newLayer);
         }
+
         return parentIndex >= 0 ? parentIndex : 0;
     }
 }
