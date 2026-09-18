@@ -270,7 +270,8 @@ public sealed partial class MassingGenerator
 
     private List<FootprintPad> ClipPadsAwayFromRoads(RhinoDoc doc, List<FootprintPad> pads, double z0)
     {
-        var roads = RoadOutlineHelper.CollectPlanarRoadBreps(doc, z0, _docTolerance);
+        // Roadway only — do not use sidewalk/parking as cutters (too aggressive)
+        var roads = RoadOutlineHelper.CollectPlanarRoadBreps(doc, z0, _docTolerance, includeSidewalkAndParking: false);
         if (roads.Count == 0) return pads;
 
         var result = new List<FootprintPad>();
@@ -287,6 +288,12 @@ public sealed partial class MassingGenerator
                 foreach (var piece in planar)
                 {
                     var remain = RoadOutlineHelper.Subtract(piece, roads, _docTolerance);
+                    if (remain.Count == 0)
+                    {
+                        // clip removed pad entirely — keep original so massing still appears
+                        result.Add(pad);
+                        continue;
+                    }
                     foreach (var r in remain)
                     {
                         if (r is null || !r.IsValid) continue;
@@ -308,6 +315,11 @@ public sealed partial class MassingGenerator
                 result.Add(pad);
             }
         }
+
+        // If somehow empty, fall back to original pads
+        if (result.Count == 0)
+            return pads;
+
         return result;
     }
 
@@ -343,11 +355,27 @@ public sealed partial class MassingGenerator
 
         try
         {
-            var ext = Extrusion.Create(c, heightDoc, cap: true);
+            var ext = Extrusion.Create(c, heightDoc, true);
             if (ext is not null)
             {
                 var b = ext.ToBrep();
                 if (b is not null && b.IsValid) return b;
+            }
+        }
+        catch { }
+
+        try
+        {
+            var planar = Brep.CreatePlanarBreps(c, _docTolerance);
+            if (planar is { Length: > 0 })
+            {
+                var extruded = planar[0].Faces[0].CreateExtrusion(
+                    new LineCurve(new Point3d(0, 0, 0), new Point3d(0, 0, heightDoc)), true);
+                if (extruded is not null && extruded.IsValid)
+                {
+                    extruded.Translate(0, 0, baseZ - extruded.GetBoundingBox(true).Min.Z);
+                    return extruded;
+                }
             }
         }
         catch { }

@@ -11,6 +11,9 @@ public sealed partial class RoadSurfaceGenerator
         var created = 0;
         var stopOffset = StopLineOffsetMeters * _metersToDoc;
         var crossDepth = CrosswalkDepthMeters * _metersToDoc;
+        var stripeW = CrosswalkStripeMeters * _metersToDoc;
+        var stripeGap = stripeW; // equal gap between stripes
+
         foreach (var eg in incident)
         {
             var dir = DirectionFromNode(eg, node.Id);
@@ -18,20 +21,91 @@ public sealed partial class RoadSurfaceGenerator
             var nodePt = IsStart(eg, node.Id) ? eg.Curve.PointAtStart : eg.Curve.PointAtEnd;
             var along = Math.Max(eg.ExtStart, eg.ExtEnd);
             if (along < _docTolerance) along = stopOffset;
+
             var stopCenter = nodePt + dir * (along + stopOffset);
             var perp = Vector3d.CrossProduct(dir, Vector3d.ZAxis);
-            if (!perp.Unitize()) { perp = Vector3d.CrossProduct(dir, Vector3d.XAxis); perp.Unitize(); }
+            if (!perp.Unitize())
+            {
+                perp = Vector3d.CrossProduct(dir, Vector3d.XAxis);
+                perp.Unitize();
+            }
+
             var halfW = eg.WidthDoc * 0.5;
-            created += AddCurve(doc, new LineCurve(stopCenter + perp * halfW, stopCenter - perp * halfW), LayerCrossing, nodeId: node.Id);
-            var crossStart = nodePt + dir * Math.Max(along * 0.3, _docTolerance * 10);
-            var nStripes = Math.Max(2, (int)(crossDepth / Math.Max(CrosswalkStripeMeters * _metersToDoc * 2, _docTolerance)));
+
+            // Stop line as thin mesh strip
+            created += AddMeshStripe(
+                doc,
+                stopCenter - dir * (stripeW * 0.25),
+                dir, perp,
+                stripeW * 0.5, halfW * 2,
+                LayerCrossing, node.Id);
+
+            // Zebra: series of mesh rectangles across the roadway near the node
+            var crossStart = nodePt + dir * Math.Max(along * 0.25, _docTolerance * 10);
+            var pitch = stripeW + stripeGap;
+            var nStripes = Math.Max(3, (int)(crossDepth / Math.Max(pitch, _docTolerance)));
             for (var i = 0; i < nStripes; i++)
             {
-                var c = crossStart + dir * (crossDepth * ((i + 0.5) / nStripes));
-                created += AddCurve(doc, new LineCurve(c + perp * halfW, c - perp * halfW), LayerCrossing, nodeId: node.Id);
+                var c = crossStart + dir * (pitch * (i + 0.5));
+                created += AddMeshStripe(
+                    doc, c, dir, perp,
+                    stripeW, halfW * 2,
+                    LayerCrossing, node.Id);
             }
         }
+
         return created;
+    }
+
+    /// <summary>
+    /// Flat mesh rectangle centered at <paramref name="center"/>,
+    /// extent along <paramref name="alongDir"/> = depth, along <paramref name="perp"/> = width.
+    /// </summary>
+    private int AddMeshStripe(
+        RhinoDoc doc,
+        Point3d center,
+        Vector3d alongDir,
+        Vector3d perp,
+        double depth,
+        double width,
+        string layerPath,
+        string nodeId)
+    {
+        if (depth <= _docTolerance || width <= _docTolerance) return 0;
+        if (!alongDir.Unitize() || !perp.Unitize()) return 0;
+
+        var halfD = depth * 0.5;
+        var halfW = width * 0.5;
+        // Slightly raise above roadway to avoid z-fighting
+        var lift = _docTolerance * 5;
+        var z = center.Z + lift;
+
+        var a = center + alongDir * (-halfD) + perp * (-halfW);
+        var b = center + alongDir * (halfD) + perp * (-halfW);
+        var c = center + alongDir * (halfD) + perp * (halfW);
+        var d = center + alongDir * (-halfD) + perp * (halfW);
+        a.Z = b.Z = c.Z = d.Z = z;
+
+        var mesh = new Mesh();
+        mesh.Vertices.Add(a);
+        mesh.Vertices.Add(b);
+        mesh.Vertices.Add(c);
+        mesh.Vertices.Add(d);
+        mesh.Faces.AddFace(0, 1, 2, 3);
+        mesh.Normals.ComputeNormals();
+
+        if (!mesh.IsValid) return 0;
+
+        var layerIndex = EnsureLayerPath(doc, layerPath, System.Drawing.Color.FromArgb(250, 250, 250));
+        var attrs = new ObjectAttributes
+        {
+            LayerIndex = layerIndex,
+            ColorSource = ObjectColorSource.ColorFromObject,
+            ObjectColor = System.Drawing.Color.FromArgb(245, 245, 245),
+        };
+        attrs.SetUserString(RoadSurfaceCleanup.GeneratedByKey, RoadSurfaceCleanup.GeneratedByValue);
+        attrs.SetUserString(RoadSurfaceCleanup.SourceNodeKey, nodeId);
+        return doc.Objects.AddMesh(mesh, attrs) != Guid.Empty ? 1 : 0;
     }
 
     private int AddOneWayArrows(RhinoDoc doc, Curve center, string edgeId)
@@ -47,9 +121,12 @@ public sealed partial class RoadSurfaceGenerator
         for (var d = spacing; d < len - arrowLen; d += spacing)
         {
             if (!center.LengthParameter(d, out var t0) || !center.LengthParameter(d + arrowLen, out var t1)) continue;
-            var tip = center.PointAt(t1); var tail = center.PointAt(t0);
-            var dir = tip - tail; if (!dir.Unitize()) continue;
-            var perp = Vector3d.CrossProduct(dir, plane.ZAxis); if (!perp.Unitize()) continue;
+            var tip = center.PointAt(t1);
+            var tail = center.PointAt(t0);
+            var dir = tip - tail;
+            if (!dir.Unitize()) continue;
+            var perp = Vector3d.CrossProduct(dir, plane.ZAxis);
+            if (!perp.Unitize()) continue;
             created += AddCurve(doc, new PolylineCurve(new[] { tail + perp * halfW, tip, tail - perp * halfW }), LayerArrows, edgeId: edgeId);
         }
         return created;
@@ -98,8 +175,16 @@ public sealed partial class RoadSurfaceGenerator
         var left = center.Offset(plane, halfWidth, _docTolerance, CurveOffsetCornerStyle.Sharp);
         var right = center.Offset(plane, -halfWidth, _docTolerance, CurveOffsetCornerStyle.Sharp);
         if (left is null || left.Length == 0 || right is null || right.Length == 0) return null;
-        var l = left[0]; var r = right[0]; r.Reverse();
-        var parts = new List<Curve> { l, new LineCurve(l.PointAtEnd, r.PointAtStart), r, new LineCurve(r.PointAtEnd, l.PointAtStart) };
+        var l = left[0];
+        var r = right[0];
+        r.Reverse();
+        var parts = new List<Curve>
+        {
+            l,
+            new LineCurve(l.PointAtEnd, r.PointAtStart),
+            r,
+            new LineCurve(r.PointAtEnd, l.PointAtStart),
+        };
         var joined = Curve.JoinCurves(parts, _docTolerance * 10);
         if (joined is null || joined.Length == 0) return null;
         var loop = joined[0];
@@ -111,13 +196,21 @@ public sealed partial class RoadSurfaceGenerator
     {
         if (curves.Count == 0) return new List<Curve>();
         if (curves.Count == 1) return new List<Curve> { curves[0].DuplicateCurve() };
-        try { var result = Curve.CreateBooleanUnion(curves, _docTolerance); return result is null || result.Length == 0 ? new List<Curve>() : result.ToList(); }
+        try
+        {
+            var result = Curve.CreateBooleanUnion(curves, _docTolerance);
+            return result is null || result.Length == 0 ? new List<Curve>() : result.ToList();
+        }
         catch { return new List<Curve>(); }
     }
 
     private List<Curve> BooleanDifferenceCurves(Curve outer, Curve inner)
     {
-        try { var result = Curve.CreateBooleanDifference(outer, inner, _docTolerance); return result is null || result.Length == 0 ? new List<Curve>() : result.ToList(); }
+        try
+        {
+            var result = Curve.CreateBooleanDifference(outer, inner, _docTolerance);
+            return result is null || result.Length == 0 ? new List<Curve>() : result.ToList();
+        }
         catch { return new List<Curve>(); }
     }
 
@@ -172,7 +265,11 @@ public sealed partial class RoadSurfaceGenerator
     private bool HasAcuteAngle(RoadNode node, List<EdgeGeom> incident)
     {
         var dirs = new List<Vector3d>();
-        foreach (var eg in incident) { var v = DirectionFromNode(eg, node.Id); if (v.Unitize()) dirs.Add(v); }
+        foreach (var eg in incident)
+        {
+            var v = DirectionFromNode(eg, node.Id);
+            if (v.Unitize()) dirs.Add(v);
+        }
         for (var i = 0; i < dirs.Count; i++)
             for (var j = i + 1; j < dirs.Count; j++)
             {
@@ -186,8 +283,14 @@ public sealed partial class RoadSurfaceGenerator
     private static double GetSidewalkWidthM(RhinoObject obj, string roadClass)
     {
         var s = obj.Attributes.GetUserString("sidewalk_width_m");
-        if (double.TryParse(s, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var w) && w >= 0) return w;
-        return roadClass.ToLowerInvariant() switch { "primary" or "secondary" => 2.5, "local" => 1.8, _ => 0.0 };
+        if (double.TryParse(s, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var w) && w >= 0)
+            return w;
+        return roadClass.ToLowerInvariant() switch
+        {
+            "primary" or "secondary" => 2.5,
+            "local" => 1.8,
+            _ => 0.0,
+        };
     }
 
     private static bool GetGenerateMarkings(RhinoObject obj, string roadClass)
@@ -212,8 +315,10 @@ public sealed partial class RoadSurfaceGenerator
             if (layer is null || layer.IsDeleted) continue;
             if (layer.FullPath.Equals(fullPath, StringComparison.OrdinalIgnoreCase)) return i;
         }
+
         var parts = fullPath.Split(new[] { "::" }, StringSplitOptions.None);
-        var parentIndex = -1; var built = "";
+        var parentIndex = -1;
+        var built = "";
         for (var p = 0; p < parts.Length; p++)
         {
             built = p == 0 ? parts[0] : built + "::" + parts[p];
@@ -222,23 +327,42 @@ public sealed partial class RoadSurfaceGenerator
             {
                 var layer = doc.Layers[i];
                 if (layer is null || layer.IsDeleted) continue;
-                if (layer.FullPath.Equals(built, StringComparison.OrdinalIgnoreCase)) { found = i; break; }
+                if (layer.FullPath.Equals(built, StringComparison.OrdinalIgnoreCase))
+                {
+                    found = i;
+                    break;
+                }
             }
-            if (found >= 0) { parentIndex = found; continue; }
+            if (found >= 0)
+            {
+                parentIndex = found;
+                continue;
+            }
+
             var newLayer = new Layer { Name = parts[p] };
             if (parentIndex >= 0) newLayer.ParentLayerId = doc.Layers[parentIndex].Id;
             if (p == parts.Length - 1 && color.HasValue) newLayer.Color = color.Value;
             parentIndex = doc.Layers.Add(newLayer);
         }
+
         return parentIndex >= 0 ? parentIndex : 0;
     }
 
     private struct EdgeGeom
     {
-        public RoadEdge Edge; public Curve Curve; public double WidthDoc; public double SidewalkDoc;
-        public int Lanes; public bool GenerateMarkings; public double ExtStart; public double ExtEnd;
-        public double CornerRadiusDoc; public double MedianWidthDoc; public double SidewalkGreenDoc;
-        public double ParkingWidthDoc; public bool OneWay;
+        public RoadEdge Edge;
+        public Curve Curve;
+        public double WidthDoc;
+        public double SidewalkDoc;
+        public int Lanes;
+        public bool GenerateMarkings;
+        public double ExtStart;
+        public double ExtEnd;
+        public double CornerRadiusDoc;
+        public double MedianWidthDoc;
+        public double SidewalkGreenDoc;
+        public double ParkingWidthDoc;
+        public bool OneWay;
     }
 
     public sealed class GenerationResult
