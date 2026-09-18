@@ -9,7 +9,11 @@ namespace UrbanBridge.Plugin;
 public sealed class DashboardTabContent : Panel
 {
     private readonly Label _boundaryLabel = new() { Text = "Boundary: (entire model)" };
-    private readonly CheckBox _autoUpdate = new() { Text = "Auto-update geometry (proxies on zone edit)", Checked = false };
+    private readonly CheckBox _autoUpdate = new()
+    {
+        Text = "Auto-update ALL geometry (roads, zones, massing, courtyards)",
+        Checked = false,
+    };
     private readonly Label _popLabel = new() { Text = "Population: —" };
     private readonly Label _jobsLabel = new() { Text = "Jobs: —" };
     private readonly Label _greenLabel = new() { Text = "Green: —" };
@@ -64,6 +68,11 @@ public sealed class DashboardTabContent : Panel
                 {
                     new Label { Text = "Project Dashboard", Font = new Font(SystemFont.Bold, 12) },
                     _autoUpdate,
+                    new Label
+                    {
+                        Text = "When on: move road/zone curve → surfaces, proxies, buildings & green update.",
+                        TextColor = Colors.Gray,
+                    },
                     new GroupBox
                     {
                         Text = "Project boundary",

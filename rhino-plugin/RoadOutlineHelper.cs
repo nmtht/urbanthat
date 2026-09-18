@@ -6,16 +6,23 @@ namespace UrbanBridge.Plugin;
 
 /// <summary>
 /// Collect planar horizontal road footprints (XY) for clipping zones/massing.
-/// Only nearly-horizontal faces on Roadway (and optionally Sidewalk/Parking).
+/// Includes a small outward buffer so buildings never touch the curb.
 /// </summary>
 public static class RoadOutlineHelper
 {
+    /// <summary>Extra setback from roadway edge when clipping massing (meters).</summary>
+    public const double MassingRoadBufferM = 1.5;
+
     public static List<Brep> CollectPlanarRoadBreps(
         RhinoDoc doc,
         double z,
         double tol,
-        bool includeSidewalkAndParking = true)
+        bool includeSidewalkAndParking = true,
+        double bufferMeters = 0)
     {
+        var m2d = RhinoMath.UnitScale(UnitSystem.Meters, doc.ModelUnitSystem);
+        var bufferDoc = Math.Max(0, bufferMeters) * m2d;
+
         var curves = new List<Curve>();
         foreach (var obj in doc.Objects)
         {
@@ -44,7 +51,6 @@ public static class RoadOutlineHelper
                 {
                     if (!face.FrameAt(face.Domain(0).Mid, face.Domain(1).Mid, out var frame))
                         continue;
-                    // Only top/bottom-ish faces — skip vertical walls
                     if (Math.Abs(frame.ZAxis.Z) < 0.85)
                         continue;
 
@@ -57,7 +63,13 @@ public static class RoadOutlineHelper
                         flat.MakeClosed(tol * 10);
                     if (!flat.IsClosed || !flat.IsValid) continue;
 
-                    // Skip degenerate tiny loops
+                    if (bufferDoc > tol)
+                    {
+                        var buffered = OffsetOutward(flat, bufferDoc, tol);
+                        if (buffered is not null)
+                            flat = buffered;
+                    }
+
                     var amp = AreaMassProperties.Compute(flat);
                     if (amp is null || amp.Area < tol * tol * 10)
                         continue;
@@ -87,6 +99,79 @@ public static class RoadOutlineHelper
         return result;
     }
 
+    /// <summary>Split a closed curve by road footprints → multiple residual parcels.</summary>
+    public static List<Curve> SplitCurveByRoads(
+        RhinoDoc doc, Curve boundary, double z, double tol, double bufferMeters = MassingRoadBufferM)
+    {
+        var roads = CollectPlanarRoadBreps(doc, z, tol, includeSidewalkAndParking: true, bufferMeters: bufferMeters);
+        if (roads.Count == 0)
+        {
+            var d = boundary.DuplicateCurve();
+            return d is null ? new List<Curve>() : new List<Curve> { d };
+        }
+
+        var c = boundary.DuplicateCurve();
+        if (c is null) return new List<Curve>();
+        c.Transform(Transform.PlanarProjection(new Plane(new Point3d(0, 0, z), Vector3d.ZAxis)));
+        if (!c.IsClosed) c.MakeClosed(tol * 10);
+
+        Brep[]? subject;
+        try { subject = Brep.CreatePlanarBreps(c, tol); }
+        catch { return new List<Curve> { c }; }
+        if (subject is null || subject.Length == 0) return new List<Curve> { c };
+
+        var remaining = subject.ToList();
+        foreach (var road in roads)
+        {
+            var next = new List<Brep>();
+            foreach (var piece in remaining)
+            {
+                try
+                {
+                    var diff = Brep.CreateBooleanDifference(new[] { piece }, new[] { road }, tol);
+                    if (diff is { Length: > 0 })
+                        next.AddRange(diff);
+                    else if (diff is null)
+                        next.Add(piece);
+                    // Length 0 = fully covered by road — drop
+                }
+                catch
+                {
+                    next.Add(piece);
+                }
+            }
+            remaining = next;
+            if (remaining.Count == 0) break;
+        }
+
+        var loops = new List<Curve>();
+        var m2d = RhinoMath.UnitScale(UnitSystem.Meters, doc.ModelUnitSystem);
+        var minArea = 25.0 * m2d * m2d; // drop scraps &lt; 25 m²
+
+        foreach (var b in remaining)
+        {
+            if (b is null || !b.IsValid) continue;
+            foreach (var face in b.Faces)
+            {
+                var loop = face.OuterLoop?.To3dCurve();
+                if (loop is null || !loop.IsValid) continue;
+                if (!loop.IsClosed) loop.MakeClosed(tol * 10);
+                if (!loop.IsClosed) continue;
+                var amp = AreaMassProperties.Compute(loop);
+                if (amp is null || amp.Area < minArea) continue;
+                loops.Add(loop);
+            }
+        }
+
+        if (loops.Count == 0)
+        {
+            // entire zone under road — keep original so analysis still works
+            return new List<Curve> { c };
+        }
+
+        return loops;
+    }
+
     public static List<Brep> Subtract(Brep subject, List<Brep> cutters, double tol)
     {
         var current = new List<Brep> { subject };
@@ -97,16 +182,16 @@ public static class RoadOutlineHelper
             {
                 try
                 {
-                    var diff = Brep.CreateBooleanDifference(piece, cutter, tol);
+                    var diff = Brep.CreateBooleanDifference(new[] { piece }, new[] { cutter }, tol);
                     if (diff is { Length: > 0 })
                         next.AddRange(diff);
                     else if (diff is { Length: 0 })
                     {
-                        // fully inside cutter — drop
+                        // fully inside cutter — drop (NO fallback to original)
                     }
                     else
                     {
-                        // null = boolean failed — keep original
+                        // null = boolean failed — keep
                         next.Add(piece);
                     }
                 }
@@ -120,5 +205,39 @@ public static class RoadOutlineHelper
         }
 
         return current;
+    }
+
+    private static Curve? OffsetOutward(Curve curve, double distance, double tol)
+    {
+        var c = curve.DuplicateCurve();
+        if (c is null) return null;
+        var plane = Plane.WorldXY;
+        if (c.TryGetPlane(out var cp, tol * 10)) plane = cp;
+        if (c.ClosedCurveOrientation(plane) == CurveOrientation.Clockwise)
+            c.Reverse();
+
+        try
+        {
+            // CCW curve: positive offset is outward
+            var offs = c.Offset(plane, distance, tol, CurveOffsetCornerStyle.Sharp);
+            if (offs is null || offs.Length == 0) return null;
+            Curve? best = null;
+            double bestA = 0;
+            foreach (var o in offs)
+            {
+                if (o is null || !o.IsValid) continue;
+                if (!o.IsClosed) o.MakeClosed(tol * 10);
+                if (!o.IsClosed) continue;
+                var amp = AreaMassProperties.Compute(o);
+                var a = amp?.Area ?? 0;
+                if (a > bestA)
+                {
+                    bestA = a;
+                    best = o;
+                }
+            }
+            return best;
+        }
+        catch { return null; }
     }
 }

@@ -111,17 +111,15 @@ public sealed class DocumentEventHandlers
                 try
                 {
                     _server.RebuildAndSendRoadNetwork(doc);
-                    if (PluginSettings.AutoUpdateGeometry && _server.LatestRoadNetwork is { } graph)
-                    {
-                        var gen = new RoadSurfaceGenerator(doc);
-                        gen.Generate(doc, graph);
-                        _server.MarkRoadSurfaceGenerated();
-                        // proxies depend on roads
-                        _server.RebuildZoneAnalysis(doc);
-                        if (_server.LatestZoneAnalysis is { Zones.Count: > 0 } za)
-                            new ZoneProxyGenerator(doc).RegenerateAll(doc, za);
-                        RhinoApp.WriteLine("[UrbanBridge] Auto-update: road surfaces + proxies.");
-                    }
+                    if (!PluginSettings.AutoUpdateGeometry) return;
+                    if (_server.LatestRoadNetwork is not { } graph) return;
+
+                    new RoadSurfaceGenerator(doc).Generate(doc, graph);
+                    _server.MarkRoadSurfaceGenerated();
+
+                    // Full cascade: zones split by new roads → proxies → massing
+                    RunFullZonePipeline(doc);
+                    RhinoApp.WriteLine("[UrbanBridge] Auto-update: roads + zones + massing.");
                 }
                 catch (Exception ex) { RhinoApp.WriteLine($"[UrbanBridge] Road debounce: {ex.Message}"); }
             }, null, 500, System.Threading.Timeout.Infinite);
@@ -137,27 +135,34 @@ public sealed class DocumentEventHandlers
             {
                 try
                 {
-                    _server.RebuildZoneAnalysis(doc);
-                    if (!PluginSettings.AutoUpdateGeometry) return;
-                    if (_server.LatestZoneAnalysis is not { Zones.Count: > 0 } analysis) return;
-
-                    new ZoneProxyGenerator(doc).RegenerateAll(doc, analysis);
-
-                    if (PluginSettings.AutoUpdateMassing)
+                    if (!PluginSettings.AutoUpdateGeometry)
                     {
-                        var batch = new MassingGenerator(doc).Generate(doc, analysis);
-                        _server.LatestMassingBuiltGfaSqm = batch.TotalBuiltFloorAreaSqm;
-                        if (PluginSettings.GenerateFacadesWithMassing)
-                            new FacadeGenerator(doc).GenerateFromMassing(doc, PluginSettings.GreenRoof);
-                        if (PluginSettings.GenerateTreesForGreenZones)
-                            new TreeGenerator(doc).GenerateForGreenZones(doc, analysis);
+                        _server.RebuildZoneAnalysis(doc);
+                        return;
                     }
 
-                    RhinoApp.WriteLine("[UrbanBridge] Auto-update: zone proxies" +
-                        (PluginSettings.AutoUpdateMassing ? " + massing" : "") + ".");
+                    RunFullZonePipeline(doc);
+                    RhinoApp.WriteLine("[UrbanBridge] Auto-update: zone proxies + massing + courtyards.");
                 }
                 catch (Exception ex) { RhinoApp.WriteLine($"[UrbanBridge] Zone debounce: {ex.Message}"); }
             }, null, 600, System.Threading.Timeout.Infinite);
         }
+    }
+
+    private void RunFullZonePipeline(RhinoDoc doc)
+    {
+        _server.RebuildZoneAnalysis(doc);
+        if (_server.LatestZoneAnalysis is not { Zones.Count: > 0 } analysis) return;
+
+        new ZoneProxyGenerator(doc).RegenerateAll(doc, analysis);
+
+        var batch = new MassingGenerator(doc).Generate(doc, analysis);
+        _server.LatestMassingBuiltGfaSqm = batch.TotalBuiltFloorAreaSqm;
+
+        if (PluginSettings.GenerateFacadesWithMassing)
+            new FacadeGenerator(doc).GenerateFromMassing(doc, PluginSettings.GreenRoof);
+
+        if (PluginSettings.GenerateTreesForGreenZones)
+            new TreeGenerator(doc).GenerateForGreenZones(doc, analysis);
     }
 }
