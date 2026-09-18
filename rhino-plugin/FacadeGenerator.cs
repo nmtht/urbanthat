@@ -65,15 +65,17 @@ public sealed class FacadeGenerator
         foreach (var face in brep.Faces)
         {
             if (!face.IsValid) continue;
-            var frame = face.FrameAt(face.Domain(0).Mid, face.Domain(1).Mid);
+
+            if (!face.FrameAt(face.Domain(0).Mid, face.Domain(1).Mid, out var frame))
+                continue;
             if (!frame.IsValid) continue;
+
             var normal = frame.ZAxis;
             // vertical faces only
             if (Math.Abs(normal.Z) > 0.3) continue;
 
             var uDom = face.Domain(0);
             var vDom = face.Domain(1);
-            // estimate sizes via frame evaluation
             var p00 = face.PointAt(uDom.Min, vDom.Min);
             var p10 = face.PointAt(uDom.Max, vDom.Min);
             var p01 = face.PointAt(uDom.Min, vDom.Max);
@@ -81,7 +83,6 @@ public sealed class FacadeGenerator
             var vLen = p00.DistanceTo(p01);
             if (uLen < margin * 2 + wWin || vLen < margin * 2 + hWin) continue;
 
-            // map window grid in UV of face; prefer longer as horizontal
             var uIsHoriz = Math.Abs(p10.Z - p00.Z) < Math.Abs(p01.Z - p00.Z);
             var horizLen = uIsHoriz ? uLen : vLen;
             var vertLen = uIsHoriz ? vLen : uLen;
@@ -131,20 +132,19 @@ public sealed class FacadeGenerator
     {
         var topZ = brep.GetBoundingBox(true).Max.Z;
         var n = 0;
+
         foreach (var face in brep.Faces)
         {
-            var frame = face.FrameAt(face.Domain(0).Mid, face.Domain(1).Mid);
+            if (!face.FrameAt(face.Domain(0).Mid, face.Domain(1).Mid, out var frame))
+                continue;
             if (!frame.IsValid) continue;
-            if (frame.ZAxis.Z < 0.7) continue; // upward-ish
+            if (frame.ZAxis.Z < 0.7) continue;
+
             var center = face.PointAt(face.Domain(0).Mid, face.Domain(1).Mid);
             if (Math.Abs(center.Z - topZ) > _tol * 50) continue;
 
             try
             {
-                var meshes = Mesh.CreateFromBrep(brep, MeshingParameters.FastRenderMesh);
-                // simpler: mesh just this face via Extract
-                var faceBrep = face.DuplicateFace(false)?.DuplicateShallow();
-                // Use planar mesh from outer loop
                 var loop = face.OuterLoop?.To3dCurve();
                 if (loop is null) continue;
                 var raised = loop.DuplicateCurve();
@@ -162,6 +162,7 @@ public sealed class FacadeGenerator
             }
             catch { }
         }
+
         return n;
     }
 
@@ -189,6 +190,7 @@ public sealed class FacadeGenerator
             if (layer.FullPath.Equals(fullPath, StringComparison.OrdinalIgnoreCase))
                 return i;
         }
+
         var parts = fullPath.Split(new[] { "::" }, StringSplitOptions.None);
         var parentIndex = -1;
         var built = "";
@@ -206,12 +208,21 @@ public sealed class FacadeGenerator
                     break;
                 }
             }
-            if (found >= 0) { parentIndex = found; continue; }
+
+            if (found >= 0)
+            {
+                parentIndex = found;
+                continue;
+            }
+
             var newLayer = new Layer { Name = parts[p] };
-            if (parentIndex >= 0) newLayer.ParentLayerId = doc.Layers[parentIndex].Id;
-            if (p == parts.Length - 1) newLayer.Color = color;
+            if (parentIndex >= 0)
+                newLayer.ParentLayerId = doc.Layers[parentIndex].Id;
+            if (p == parts.Length - 1)
+                newLayer.Color = color;
             parentIndex = doc.Layers.Add(newLayer);
         }
+
         return parentIndex >= 0 ? parentIndex : 0;
     }
 }

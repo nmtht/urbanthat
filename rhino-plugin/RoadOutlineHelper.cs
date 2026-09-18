@@ -29,7 +29,6 @@ public static class RoadOutlineHelper
             };
             if (brep is null) continue;
 
-            // Project outer loops to plane at z
             foreach (var face in brep.Faces)
             {
                 try
@@ -38,9 +37,6 @@ public static class RoadOutlineHelper
                     if (loop is null || !loop.IsValid) continue;
                     var flat = loop.DuplicateCurve();
                     if (flat is null) continue;
-                    // flatten Z
-                    var pts = flat.Points();
-                    // simpler: pull to plane
                     flat.Transform(Transform.PlanarProjection(new Plane(new Point3d(0, 0, z), Vector3d.ZAxis)));
                     if (!flat.IsClosed)
                         flat.MakeClosed(tol * 10);
@@ -58,10 +54,15 @@ public static class RoadOutlineHelper
             {
                 var pieces = Brep.CreatePlanarBreps(c, tol);
                 if (pieces is null) continue;
-                result.AddRange(pieces.Where(p => p is not null && p.IsValid)!);
+                foreach (var p in pieces)
+                {
+                    if (p is not null && p.IsValid)
+                        result.Add(p);
+                }
             }
             catch { }
         }
+
         return result;
     }
 
@@ -78,11 +79,15 @@ public static class RoadOutlineHelper
                     var diff = Brep.CreateBooleanDifference(piece, cutter, tol);
                     if (diff is { Length: > 0 })
                         next.AddRange(diff);
-                    // if boolean returns empty, piece fully inside road → drop
                     else if (diff is { Length: 0 })
-                    { /* removed */ }
+                    {
+                        // fully subtracted — drop piece
+                    }
                     else
-                        next.Add(piece); // null = failed, keep
+                    {
+                        // null = failure — keep original
+                        next.Add(piece);
+                    }
                 }
                 catch
                 {
@@ -92,6 +97,7 @@ public static class RoadOutlineHelper
             current = next;
             if (current.Count == 0) break;
         }
+
         return current;
     }
 }
