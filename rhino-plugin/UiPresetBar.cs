@@ -4,8 +4,7 @@ using Eto.Forms;
 namespace UrbanBridge.Plugin;
 
 /// <summary>
-/// Drawable row of selectable preset chips (massing type, zone type).
-/// Click selects; selected chip uses accent color.
+/// Drawable preset chips — white text on dark chips; selected = accent.
 /// </summary>
 public sealed class UiPresetBar : Drawable
 {
@@ -37,6 +36,7 @@ public sealed class UiPresetBar : Drawable
         _items = items ?? Array.Empty<string>();
         _selected = Math.Clamp(selected, 0, Math.Max(0, _items.Length - 1));
         Size = new Size(320, 34);
+        BackgroundColor = UiTheme.PanelBg;
         Cursor = Cursors.Pointer;
 
         MouseMove += (_, e) =>
@@ -64,6 +64,7 @@ public sealed class UiPresetBar : Drawable
     {
         var g = e.Graphics;
         g.AntiAlias = true;
+        g.Clear(UiTheme.PanelBg);
         if (_items.Length == 0) return;
 
         var font = Fonts.Sans(8);
@@ -84,15 +85,14 @@ public sealed class UiPresetBar : Drawable
             var bg = i == _selected ? UiTheme.ChipSelected
                 : i == _hover ? UiTheme.ChipHover
                 : UiTheme.ChipIdle;
-            var fg = i == _selected ? UiTheme.ChipTextOn : UiTheme.ChipText;
 
             g.FillRectangle(bg, x, y, w, h);
-            var border = i == _selected ? UiTheme.AccentDark : UiTheme.Track;
-            g.DrawRectangle(new Pen(border, 1), x, y, w, h);
+            g.DrawRectangle(new Pen(UiTheme.Track, 1), x, y, w, h);
 
+            // Always white text on dark/accent chips
             var tx = x + (w - tw) * 0.5f;
             var ty = y + (h - font.LineHeight) * 0.5f;
-            g.DrawText(font, fg, tx, ty, text);
+            g.DrawText(font, Colors.White, tx, ty, text);
 
             x += w + gap;
         }
@@ -102,7 +102,6 @@ public sealed class UiPresetBar : Drawable
     {
         if (_widths.Count != _items.Length)
         {
-            // Fallback equal width estimate before first paint
             var approx = 56f;
             for (var i = 0; i < _items.Length; i++)
             {

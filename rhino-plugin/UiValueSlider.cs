@@ -4,8 +4,7 @@ using Eto.Forms;
 namespace UrbanBridge.Plugin;
 
 /// <summary>
-/// Drawable horizontal value slider (drag via MouseDown/Move).
-/// Labels and values drawn in black on light track.
+/// Drawable horizontal value slider. White text on dark background.
 /// </summary>
 public sealed class UiValueSlider : Drawable
 {
@@ -41,7 +40,7 @@ public sealed class UiValueSlider : Drawable
         Maximum = max;
         _value = Math.Clamp(initial, min, max);
         Size = new Size(280, 36);
-        BackgroundColor = Colors.White;
+        BackgroundColor = UiTheme.PanelBg;
         Cursor = Cursors.Pointer;
 
         MouseDown += OnMouseDown;
@@ -54,16 +53,16 @@ public sealed class UiValueSlider : Drawable
     {
         var g = e.Graphics;
         g.AntiAlias = true;
-        g.Clear(Colors.White);
+        g.Clear(UiTheme.PanelBg);
 
         var labelFont = Fonts.Sans(8);
         var valueFont = Fonts.Sans(9);
 
-        // Black text on white
-        g.DrawText(labelFont, Colors.Black, 0, 0, _label);
+        // White text on dark
+        g.DrawText(labelFont, Colors.White, 0, 0, _label);
         var valueText = _value.ToString(FormatString, System.Globalization.CultureInfo.InvariantCulture) + Unit;
         var vw = g.MeasureString(valueFont, valueText).Width;
-        g.DrawText(valueFont, Colors.Black, Width - vw - 2, 0, valueText);
+        g.DrawText(valueFont, Colors.White, Width - vw - 2, 0, valueText);
 
         var trackY = 20f;
         var trackH = 6f;
