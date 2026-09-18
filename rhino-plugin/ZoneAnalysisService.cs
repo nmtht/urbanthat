@@ -4,7 +4,10 @@ using Rhino.Geometry;
 
 namespace UrbanBridge.Plugin;
 
-/// <summary>Collects zones from the document, computes metrics, validates, checks road access.</summary>
+/// <summary>
+/// Collects zones from the document, splits parcels cut by roads,
+/// computes metrics, validates, checks road access.
+/// </summary>
 public sealed class ZoneAnalysisService
 {
     public ZoneAnalysis Analyze(
@@ -20,6 +23,7 @@ public sealed class ZoneAnalysisService
         };
 
         var lengthScaleDocToM = RhinoMath.UnitScale(doc.ModelUnitSystem, UnitSystem.Meters);
+        var tol = doc.ModelAbsoluteTolerance > 0 ? doc.ModelAbsoluteTolerance : 0.001;
         var boundary = ResolveProjectBoundary(doc);
 
         foreach (var obj in doc.Objects)
@@ -29,34 +33,94 @@ public sealed class ZoneAnalysisService
             if (!IsZonesLayer(doc, obj)) continue;
             if (!curve.IsClosed) continue;
 
-            // Scope to project boundary if set
             if (boundary is not null)
             {
                 var center = curve.GetBoundingBox(true).Center;
-                if (boundary.Contains(center, Plane.WorldXY, doc.ModelAbsoluteTolerance) != PointContainment.Inside)
+                if (boundary.Contains(center, Plane.WorldXY, tol) != PointContainment.Inside)
                     continue;
             }
 
-            var record = ReadZone(obj, curve.DuplicateCurve()!);
-            analysis.Zones.Add(record);
+            var baseRecord = ReadZone(obj, curve.DuplicateCurve()!);
+            var z0 = curve.GetBoundingBox(true).Min.Z;
 
-            var metrics = ZoneMetricsCalculator.Compute(record, lengthScaleDocToM);
-            analysis.MetricsById[record.RhinoObjectId] = metrics;
+            // Split zone by road surfaces → one ZoneRecord per parcel
+            List<Curve> parcels;
+            try
+            {
+                parcels = RoadOutlineHelper.SplitCurveByRoads(
+                    doc, baseRecord.Boundary, z0, tol, RoadOutlineHelper.MassingRoadBufferM);
+            }
+            catch
+            {
+                parcels = new List<Curve> { baseRecord.Boundary };
+            }
 
-            analysis.TotalAreaSqm += metrics.AreaSqm;
-            analysis.TotalPopulation += metrics.EstimatedPopulation;
-            analysis.TotalJobs += metrics.EstimatedJobs;
-            analysis.TotalGreenAreaSqm += metrics.GreenAreaSqm;
+            if (parcels.Count == 0)
+                parcels.Add(baseRecord.Boundary);
 
-            if (!analysis.AreaByType.ContainsKey(record.ZoneType))
-                analysis.AreaByType[record.ZoneType] = 0;
-            analysis.AreaByType[record.ZoneType] += metrics.AreaSqm;
+            if (parcels.Count > 1)
+            {
+                RhinoApp.WriteLine(
+                    $"[UrbanBridge] Zone {obj.Id.ToString()[..8]}… split into {parcels.Count} parcels by roads.");
+            }
+
+            for (var pi = 0; pi < parcels.Count; pi++)
+            {
+                var parcel = parcels[pi];
+                if (parcel is null || !parcel.IsValid) continue;
+                if (!parcel.IsClosed) parcel.MakeClosed(tol * 10);
+                if (!parcel.IsClosed) continue;
+
+                var record = new ZoneRecord
+                {
+                    RhinoObjectId = baseRecord.RhinoObjectId,
+                    Boundary = parcel,
+                    ZoneType = baseRecord.ZoneType,
+                    Far = baseRecord.Far,
+                    HeightMax = baseRecord.HeightMax,
+                    SetbackM = baseRecord.SetbackM,
+                    GreenRatio = baseRecord.GreenRatio,
+                    MassingType = baseRecord.MassingType,
+                    ZoneTypeWasMissing = baseRecord.ZoneTypeWasMissing,
+                };
+
+                // Unique key for multi-parcel: Guid composite via Metrics key
+                // Metrics dictionary needs unique key — use piece index hash
+                var metricsKey = parcels.Count == 1
+                    ? record.RhinoObjectId
+                    : DeterministicPieceId(record.RhinoObjectId, pi);
+
+                analysis.Zones.Add(record);
+
+                var metrics = ZoneMetricsCalculator.Compute(record, lengthScaleDocToM);
+                analysis.MetricsById[metricsKey] = metrics;
+                // Also store under original id for first piece so single-zone lookups still work
+                if (pi == 0)
+                    analysis.MetricsById[record.RhinoObjectId] = metrics;
+
+                analysis.TotalAreaSqm += metrics.AreaSqm;
+                analysis.TotalPopulation += metrics.EstimatedPopulation;
+                analysis.TotalJobs += metrics.EstimatedJobs;
+                analysis.TotalGreenAreaSqm += metrics.GreenAreaSqm;
+
+                if (!analysis.AreaByType.ContainsKey(record.ZoneType))
+                    analysis.AreaByType[record.ZoneType] = 0;
+                analysis.AreaByType[record.ZoneType] += metrics.AreaSqm;
+            }
         }
 
         new ZoneValidator(doc.ModelAbsoluteTolerance).Validate(analysis);
         new ZoneRoadAccessChecker(doc).Check(doc, analysis);
 
         return analysis;
+    }
+
+    private static Guid DeterministicPieceId(Guid parent, int index)
+    {
+        var bytes = parent.ToByteArray();
+        bytes[0] ^= (byte)(index + 1);
+        bytes[1] ^= (byte)((index + 1) * 17);
+        return new Guid(bytes);
     }
 
     private static Curve? ResolveProjectBoundary(RhinoDoc doc)
