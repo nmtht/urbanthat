@@ -40,7 +40,6 @@ public static class UiTheme
     public static readonly Color ChipText = Colors.White;
     public static readonly Color ChipTextOn = Colors.White;
 
-    // Button styling (Eto Button has limited style control; TextColor helps on some platforms)
     public static readonly Color ButtonText = Colors.White;
 
     public static Color Soften(Color c, float amount)
@@ -63,20 +62,17 @@ public static class UiTheme
             (int)(c.Bb * (1 - amount)));
     }
 
-    /// <summary>Apply forced dark appearance to a control tree (labels, panels, text areas).</summary>
+    /// <summary>Apply forced dark appearance to a control tree.</summary>
     public static void ApplyDark(Control root)
     {
         if (root is null) return;
-        try
-        {
-            root.BackgroundColor = PanelBg;
-        }
-        catch { /* some controls ignore */ }
 
+        // Most-derived types first (Drawable : Panel, Scrollable is separate).
         switch (root)
         {
             case Label lb:
                 lb.TextColor = Text;
+                lb.BackgroundColor = PanelBg;
                 break;
             case CheckBox cb:
                 cb.TextColor = Text;
@@ -103,11 +99,16 @@ public static class UiTheme
             case Scrollable sc:
                 sc.BackgroundColor = PanelBg;
                 break;
+            case Drawable d:
+                // Drawable inherits Panel — must come before Panel case
+                d.BackgroundColor = PanelBg;
+                break;
             case Panel p:
                 p.BackgroundColor = PanelBg;
                 break;
-            case Drawable d:
-                d.BackgroundColor = PanelBg;
+            default:
+                try { root.BackgroundColor = PanelBg; }
+                catch { /* ignore */ }
                 break;
         }
 
