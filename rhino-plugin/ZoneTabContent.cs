@@ -4,7 +4,7 @@ using Rhino;
 
 namespace UrbanBridge.Plugin;
 
-/// <summary>Zoning tab — forced dark theme, white text.</summary>
+/// <summary>Zoning tab — custom UiButton Primary/Secondary.</summary>
 public sealed class ZoneTabContent : Panel
 {
     private readonly Label _summaryLabel = new() { Text = "Zones: —", TextColor = Colors.White };
@@ -52,18 +52,20 @@ public sealed class ZoneTabContent : Panel
         _heightSlider = new UiValueSlider("Height max", 6, 80, 24) { Step = 1, Unit = " m", FormatString = "0" };
         _setbackSlider = new UiValueSlider("Setback", 0, 20, 3) { Step = 0.5, Unit = " m", FormatString = "0.#" };
 
-        var initBtn = new Button { Text = "Init as zone", TextColor = Colors.White };
+        var initBtn = new UiButton("Init as zone", UiButton.Style.Primary);
         initBtn.Click += (_, _) => InitSelected();
-        var applyBtn = new Button { Text = "Apply attributes", TextColor = Colors.White };
+        var applyBtn = new UiButton("Apply attributes", UiButton.Style.Secondary);
         applyBtn.Click += (_, _) => ApplySelected();
-        var readBtn = new Button { Text = "Read selection", TextColor = Colors.White };
+        var readBtn = new UiButton("Read selection", UiButton.Style.Secondary);
         readBtn.Click += (_, _) => ReadSelection();
-        var refreshBtn = new Button { Text = "Refresh", TextColor = Colors.White };
+        var refreshBtn = new UiButton("Refresh", UiButton.Style.Secondary);
         refreshBtn.Click += (_, _) => Rebuild();
-        var proxyBtn = new Button { Text = "Regenerate proxies", TextColor = Colors.White };
+        var proxyBtn = new UiButton("Regenerate proxies", UiButton.Style.Secondary);
         proxyBtn.Click += (_, _) => RegenerateProxies();
-        var massingBtn = new Button { Text = "Generate massing + courtyards", TextColor = Colors.White };
+        proxyBtn.Width = 160;
+        var massingBtn = new UiButton("Generate massing + courtyards", UiButton.Style.Primary);
         massingBtn.Click += (_, _) => GenerateMassing();
+        massingBtn.Width = 200;
 
         var attrLayout = new DynamicLayout { Padding = 8, Spacing = new Size(6, 6), BackgroundColor = UiTheme.CardBg };
         attrLayout.AddRow(_selectionLabel);

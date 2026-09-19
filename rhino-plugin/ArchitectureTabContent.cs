@@ -4,7 +4,7 @@ using Rhino;
 
 namespace UrbanBridge.Plugin;
 
-/// <summary>Architecture tab — forced dark theme.</summary>
+/// <summary>Architecture tab — custom UiButton Primary/Secondary.</summary>
 public sealed class ArchitectureTabContent : Panel
 {
     private readonly CheckBox _greenRoof = new()
@@ -39,12 +39,15 @@ public sealed class ArchitectureTabContent : Panel
         _withFacades.CheckedChanged += (_, _) => PluginSettings.GenerateFacadesWithMassing = _withFacades.Checked == true;
         _withTrees.CheckedChanged += (_, _) => PluginSettings.GenerateTreesForGreenZones = _withTrees.Checked == true;
 
-        var facadesBtn = new Button { Text = "Generate facades (mesh)", TextColor = Colors.White };
+        var facadesBtn = new UiButton("Generate facades (mesh)", UiButton.Style.Primary);
         facadesBtn.Click += (_, _) => RunFacades();
-        var treesBtn = new Button { Text = "Generate trees (mesh)", TextColor = Colors.White };
+        facadesBtn.Width = 180;
+        var treesBtn = new UiButton("Generate trees (mesh)", UiButton.Style.Secondary);
         treesBtn.Click += (_, _) => RunTrees();
-        var bothBtn = new Button { Text = "Generate facades + trees", TextColor = Colors.White };
+        treesBtn.Width = 180;
+        var bothBtn = new UiButton("Generate facades + trees", UiButton.Style.Primary);
         bothBtn.Click += (_, _) => { RunFacades(); RunTrees(); };
+        bothBtn.Width = 180;
 
         var optsLayout = new DynamicLayout { Padding = 8, Spacing = new Size(4, 4), BackgroundColor = UiTheme.CardBg };
         optsLayout.AddRow(_withFacades);

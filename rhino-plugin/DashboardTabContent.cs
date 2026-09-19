@@ -6,7 +6,7 @@ using Rhino.Geometry;
 namespace UrbanBridge.Plugin;
 
 /// <summary>
-/// Project dashboard — forced dark theme, white text.
+/// Project dashboard — forced dark theme, white text, custom buttons.
 /// Balance relative to project boundary.
 /// </summary>
 public sealed class DashboardTabContent : Panel
@@ -57,15 +57,15 @@ public sealed class DashboardTabContent : Panel
         _autoUpdate.CheckedChanged += (_, _) =>
             PluginSettings.AutoUpdateGeometry = _autoUpdate.Checked == true;
 
-        var setBoundary = new Button { Text = "Set from selection", TextColor = Colors.White };
+        var setBoundary = new UiButton("Set from selection", UiButton.Style.Primary);
         setBoundary.Click += (_, _) => SetBoundaryFromSelection();
-        var clearBoundary = new Button { Text = "Clear", TextColor = Colors.White };
+        var clearBoundary = new UiButton("Clear", UiButton.Style.Secondary);
         clearBoundary.Click += (_, _) =>
         {
             PluginSettings.ProjectBoundaryId = null;
             ForceRecompute();
         };
-        var refresh = new Button { Text = "Refresh", TextColor = Colors.White };
+        var refresh = new UiButton("Refresh", UiButton.Style.Secondary);
         refresh.Click += (_, _) => ForceRecompute();
 
         _chart.Paint += OnChartPaint;

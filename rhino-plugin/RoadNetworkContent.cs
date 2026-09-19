@@ -4,7 +4,7 @@ using Rhino;
 
 namespace UrbanBridge.Plugin;
 
-/// <summary>Roads tab — forced dark theme, white text, presets + sliders.</summary>
+/// <summary>Roads tab — custom UiButton Primary/Secondary.</summary>
 public sealed class RoadNetworkContent : Panel
 {
     private readonly Label _summaryLabel = new() { Text = "Road network: —", TextColor = Colors.White };
@@ -52,15 +52,16 @@ public sealed class RoadNetworkContent : Panel
         _greenStripSlider = new UiValueSlider("Sidewalk green", 0, 4, 0) { Step = 0.25, Unit = " m", FormatString = "0.##" };
         _parkingSlider = new UiValueSlider("Parking strip", 0, 4, 0) { Step = 0.25, Unit = " m", FormatString = "0.##" };
 
-        var initBtn = new Button { Text = "Init as road", TextColor = Colors.White };
+        var initBtn = new UiButton("Init as road", UiButton.Style.Primary);
         initBtn.Click += (_, _) => InitSelected();
-        var applyBtn = new Button { Text = "Apply attributes", TextColor = Colors.White };
+        var applyBtn = new UiButton("Apply attributes", UiButton.Style.Secondary);
         applyBtn.Click += (_, _) => ApplySelected();
-        var presetBtn = new Button { Text = "Apply street preset", TextColor = Colors.White };
+        var presetBtn = new UiButton("Apply street preset", UiButton.Style.Secondary);
         presetBtn.Click += (_, _) => ApplyPreset();
-        var genBtn = new Button { Text = "Generate Road Surfaces", TextColor = Colors.White };
+        var genBtn = new UiButton("Generate Road Surfaces", UiButton.Style.Primary);
         genBtn.Click += (_, _) => GenerateSurfaces();
-        var refreshBtn = new Button { Text = "Refresh graph", TextColor = Colors.White };
+        genBtn.Width = 180;
+        var refreshBtn = new UiButton("Refresh graph", UiButton.Style.Secondary);
         refreshBtn.Click += (_, _) => RebuildGraph();
 
         var attrLayout = new DynamicLayout { Padding = 8, Spacing = new Size(6, 6), BackgroundColor = UiTheme.CardBg };
