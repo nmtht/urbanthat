@@ -11,10 +11,16 @@ public enum ZoneIssueType
     ZoneNoRoadAccess,
 }
 
-/// <summary>One closed curve on Zones / Zones::* with resolved attributes.</summary>
+/// <summary>One closed curve on Zones / Zones::* with resolved attributes.
+/// When a zone is split by roads, each parcel is a separate ZoneRecord sharing RhinoObjectId
+/// but with a unique MetricsId and ParcelIndex.</summary>
 public sealed class ZoneRecord
 {
     public required Guid RhinoObjectId { get; init; }
+    /// <summary>Stable id for metrics / generated-object tagging. Equals RhinoObjectId when unsplit.</summary>
+    public Guid MetricsId { get; init; }
+    /// <summary>0-based parcel index after road split (0 when unsplit).</summary>
+    public int ParcelIndex { get; init; }
     public required Curve Boundary { get; init; }
     public required string ZoneType { get; init; }
     public double Far { get; init; }
@@ -48,6 +54,7 @@ public sealed class ZoneIssue
 public sealed class ZoneAnalysis
 {
     public List<ZoneRecord> Zones { get; } = new();
+    /// <summary>Keyed by ZoneRecord.MetricsId (unique per parcel).</summary>
     public Dictionary<Guid, ZoneMetrics> MetricsById { get; } = new();
     public List<ZoneIssue> Issues { get; } = new();
 

@@ -9,6 +9,7 @@ public static class MassingCleanup
     public const string GeneratedByKey = "generated_by";
     public const string GeneratedByValue = "building_massing_generator";
     public const string SourceZoneKey = "source_zone_id";
+    public const string MetricsIdKey = "metrics_id";
     public const string FloorsKey = "floors";
     public const string FloorIndexKey = "floor_index";
     public const string MassingTypeKey = "massing_type";
