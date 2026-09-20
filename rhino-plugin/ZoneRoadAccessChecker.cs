@@ -32,7 +32,8 @@ public sealed class ZoneRoadAccessChecker
         {
             foreach (var zone in analysis.Zones)
             {
-                if (analysis.MetricsById.TryGetValue(zone.RhinoObjectId, out var m))
+                var key0 = zone.MetricsId != Guid.Empty ? zone.MetricsId : zone.RhinoObjectId;
+                if (analysis.MetricsById.TryGetValue(key0, out var m))
                     m.RoadFrontageM = 0;
 
                 analysis.Issues.Add(new ZoneIssue
@@ -75,7 +76,8 @@ public sealed class ZoneRoadAccessChecker
                 ? length * (accessibleSamples / (double)totalSamples)
                 : 0.0;
 
-            if (analysis.MetricsById.TryGetValue(zone.RhinoObjectId, out var metrics))
+            var key = zone.MetricsId != Guid.Empty ? zone.MetricsId : zone.RhinoObjectId;
+            if (analysis.MetricsById.TryGetValue(key, out var metrics))
                 metrics.RoadFrontageM = frontageDoc * metersFromDoc;
 
             if (accessibleSamples == 0)
