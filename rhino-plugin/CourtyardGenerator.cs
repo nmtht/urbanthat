@@ -22,12 +22,15 @@ public sealed class CourtyardGenerator
         _docToM = RhinoMath.UnitScale(doc.ModelUnitSystem, UnitSystem.Meters);
     }
 
+    /// <summary>
+    /// Generate courtyard geometry for one zone/parcel.
+    /// Caller is responsible for batch-level cleanup (DeleteAllGenerated).
+    /// Does NOT call DeleteForZone — multi-parcel zones share RhinoObjectId.
+    /// </summary>
     public int GenerateForZone(
         RhinoDoc doc, ZoneRecord zone, string massingType,
         Curve envelope, IReadOnlyList<Curve> footprints, double z0)
     {
-        CourtyardCleanup.DeleteForZone(doc, zone.RhinoObjectId);
-
         var ztype = zone.ZoneType?.ToLowerInvariant() ?? "";
         if (ztype is "green" or "public")
             return 0;
@@ -54,6 +57,8 @@ public sealed class CourtyardGenerator
             return 0;
         }
 
+        var metricsTag = zone.MetricsId != Guid.Empty ? zone.MetricsId : zone.RhinoObjectId;
+
         foreach (var loop in greenLoops)
         {
             if (loop is null || !loop.IsValid) continue;
@@ -65,16 +70,16 @@ public sealed class CourtyardGenerator
             var areaSqm = amp is null ? 0 : amp.Area * _docToM * _docToM;
             if (areaSqm < 2.0) continue;
 
-            created += AddGreenMesh(doc, loop, layer, zone.RhinoObjectId, massingType);
+            created += AddGreenMesh(doc, loop, layer, zone.RhinoObjectId, metricsTag, massingType);
             if (areaSqm >= 80)
-                created += ScatterLawnTrees(doc, loop, zone.RhinoObjectId, layer);
+                created += ScatterLawnTrees(doc, loop, zone.RhinoObjectId, metricsTag, layer);
         }
 
         if (created > 0)
         {
             RhinoApp.WriteLine(
                 $"[UrbanBridge] Courtyard/{massingType}: zone {zone.RhinoObjectId.ToString()[..8]}… " +
-                $"{created} green object(s), green_ratio={greenRatio:F2}");
+                $"parcel {zone.ParcelIndex}, {created} green object(s), green_ratio={greenRatio:F2}");
         }
 
         return created;
@@ -95,26 +100,39 @@ public sealed class CourtyardGenerator
         var loops = BuildSetbackRing(boundary, envelope, z0);
         if (footprints.Count > 0 && loops.Count > 0)
             loops = SubtractFootprintsFromLoops(loops, footprints, z0);
-        // Scale setback ring area toward green_ratio of zone
-        if (greenRatio < 0.15 && loops.Count > 0)
+
+        if (loops.Count == 0) return loops;
+
+        var envAmp = AreaMassProperties.Compute(boundary);
+        var envArea = envAmp?.Area ?? 0;
+        if (envArea <= 0) return loops;
+
+        double sum = 0;
+        foreach (var loop in loops)
         {
-            // shrink ring slightly when green is low
-            var scaled = new List<Curve>();
-            foreach (var loop in loops)
-            {
-                var amp = AreaMassProperties.Compute(loop);
-                if (amp is null) continue;
-                var c = amp.Centroid;
-                var s = Math.Max(0.4, greenRatio / 0.15);
-                var d = loop.DuplicateCurve();
-                if (d is null) continue;
-                d.Transform(Transform.Scale(new Plane(c, Vector3d.ZAxis), s, s, 1));
-                if (!d.IsClosed) d.MakeClosed(_tol * 10);
-                if (d.IsClosed) scaled.Add(d);
-            }
-            if (scaled.Count > 0) return scaled;
+            var a = AreaMassProperties.Compute(loop);
+            if (a is not null) sum += a.Area;
         }
-        return loops;
+        if (sum <= 0) return loops;
+
+        var target = envArea * Math.Clamp(greenRatio, 0.08, 0.75);
+        if (sum <= target * 1.05)
+            return loops;
+
+        var scale = Math.Clamp(Math.Sqrt(target / sum), 0.30, 1.0);
+        var scaled = new List<Curve>();
+        foreach (var loop in loops)
+        {
+            var amp = AreaMassProperties.Compute(loop);
+            if (amp is null) continue;
+            var c = amp.Centroid;
+            var d = loop.DuplicateCurve();
+            if (d is null) continue;
+            d.Transform(Transform.Scale(new Plane(c, Vector3d.ZAxis), scale, scale, 1));
+            if (!d.IsClosed) d.MakeClosed(_tol * 10);
+            if (d.IsClosed) scaled.Add(d);
+        }
+        return scaled.Count > 0 ? scaled : loops;
     }
 
     private List<Curve> BuildResidualScaled(
@@ -126,7 +144,8 @@ public sealed class CourtyardGenerator
         var envAmp = AreaMassProperties.Compute(envelope);
         var envArea = envAmp?.Area ?? 0;
         if (envArea <= 0) return residual;
-        var target = envArea * Math.Clamp(greenRatio, 0.05, 0.9);
+
+        var target = envArea * Math.Clamp(greenRatio, 0.08, 0.85);
 
         double sum = 0;
         foreach (var r in residual)
@@ -138,7 +157,7 @@ public sealed class CourtyardGenerator
         if (sum <= target * 1.05 || sum <= 0)
             return residual;
 
-        var scale = Math.Clamp(Math.Sqrt(target / sum), 0.35, 1.0);
+        var scale = Math.Clamp(Math.Sqrt(target / sum), 0.30, 1.0);
         var scaled = new List<Curve>();
         foreach (var loop in residual)
         {
@@ -282,7 +301,7 @@ public sealed class CourtyardGenerator
         return best;
     }
 
-    private int AddGreenMesh(RhinoDoc doc, Curve loop, int layerIndex, Guid zoneId, string massingType)
+    private int AddGreenMesh(RhinoDoc doc, Curve loop, int layerIndex, Guid zoneId, Guid metricsId, string massingType)
     {
         try
         {
@@ -305,6 +324,7 @@ public sealed class CourtyardGenerator
                     };
                     attrs.SetUserString(CourtyardCleanup.GeneratedByKey, CourtyardCleanup.GeneratedByValue);
                     attrs.SetUserString(CourtyardCleanup.SourceZoneKey, zoneId.ToString());
+                    attrs.SetUserString(CourtyardCleanup.MetricsIdKey, metricsId.ToString());
                     attrs.SetUserString(CourtyardCleanup.MassingTypeKey, massingType);
                     if (doc.Objects.AddMesh(mesh, attrs) != Guid.Empty) n++;
                 }
@@ -314,12 +334,12 @@ public sealed class CourtyardGenerator
         catch { return 0; }
     }
 
-    private int ScatterLawnTrees(RhinoDoc doc, Curve boundary, Guid zoneId, int layerIndex)
+    private int ScatterLawnTrees(RhinoDoc doc, Curve boundary, Guid zoneId, Guid metricsId, int layerIndex)
     {
         var gap = LawnTreeGapM * _m2d;
         var bbox = boundary.GetBoundingBox(true);
         var z0 = bbox.Min.Z;
-        var rng = new Random(HashSeed(zoneId) ^ 0xC0FFEE);
+        var rng = new Random(HashSeed(metricsId) ^ 0xC0FFEE);
         var points = new List<Point3d>();
         var attempts = MaxLawnTreesPerZone * 20;
 
@@ -341,12 +361,12 @@ public sealed class CourtyardGenerator
         foreach (var p in points)
         {
             var scale = 0.65 + rng.NextDouble() * 0.4;
-            n += PlaceSimpleTree(doc, p, layerIndex, zoneId, scale);
+            n += PlaceSimpleTree(doc, p, layerIndex, zoneId, metricsId, scale);
         }
         return n;
     }
 
-    private int PlaceSimpleTree(RhinoDoc doc, Point3d p, int layerIndex, Guid zoneId, double scale)
+    private int PlaceSimpleTree(RhinoDoc doc, Point3d p, int layerIndex, Guid zoneId, Guid metricsId, double scale)
     {
         var trunkR = 0.2 * _m2d * scale;
         var trunkH = 2.0 * _m2d * scale;
@@ -360,12 +380,12 @@ public sealed class CourtyardGenerator
             sphere.Transform(Transform.Scale(new Plane(crownCenter, Vector3d.ZAxis), 1.0, 1.0, 0.75));
 
         var n = 0;
-        n += AddTreeMesh(doc, trunk, layerIndex, zoneId, System.Drawing.Color.FromArgb(90, 60, 30));
-        n += AddTreeMesh(doc, sphere, layerIndex, zoneId, System.Drawing.Color.FromArgb(45, 135, 55));
+        n += AddTreeMesh(doc, trunk, layerIndex, zoneId, metricsId, System.Drawing.Color.FromArgb(90, 60, 30));
+        n += AddTreeMesh(doc, sphere, layerIndex, zoneId, metricsId, System.Drawing.Color.FromArgb(45, 135, 55));
         return n;
     }
 
-    private static int AddTreeMesh(RhinoDoc doc, Mesh? mesh, int layerIndex, Guid zoneId, System.Drawing.Color color)
+    private static int AddTreeMesh(RhinoDoc doc, Mesh? mesh, int layerIndex, Guid zoneId, Guid metricsId, System.Drawing.Color color)
     {
         if (mesh is null || !mesh.IsValid) return 0;
         var attrs = new ObjectAttributes
@@ -376,6 +396,7 @@ public sealed class CourtyardGenerator
         };
         attrs.SetUserString(CourtyardCleanup.GeneratedByKey, CourtyardCleanup.GeneratedByValue);
         attrs.SetUserString(CourtyardCleanup.SourceZoneKey, zoneId.ToString());
+        attrs.SetUserString(CourtyardCleanup.MetricsIdKey, metricsId.ToString());
         return doc.Objects.AddMesh(mesh, attrs) != Guid.Empty ? 1 : 0;
     }
 
