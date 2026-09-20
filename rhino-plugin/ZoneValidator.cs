@@ -3,11 +3,10 @@ using Rhino.Geometry.Intersect;
 
 namespace UrbanBridge.Plugin;
 
-/// <summary>Internal zone checks (overlap, self-intersect, degenerate, missing attrs).</summary>
 public sealed class ZoneValidator
 {
+    private const double MinAreaSqm = 25.0;
     private readonly double _tolerance;
-    private const double MinAreaSqm = 4.0;
 
     public ZoneValidator(double modelAbsoluteTolerance)
     {
@@ -16,8 +15,10 @@ public sealed class ZoneValidator
 
     public void Validate(ZoneAnalysis analysis)
     {
-        foreach (var zone in analysis.Zones)
+        for (var i = 0; i < analysis.Zones.Count; i++)
         {
+            var zone = analysis.Zones[i];
+
             if (zone.ZoneTypeWasMissing)
             {
                 analysis.Issues.Add(new ZoneIssue
@@ -29,7 +30,8 @@ public sealed class ZoneValidator
                 });
             }
 
-            if (analysis.MetricsById.TryGetValue(zone.RhinoObjectId, out var m) && m.AreaSqm < MinAreaSqm)
+            var metricsKey = zone.MetricsId != Guid.Empty ? zone.MetricsId : zone.RhinoObjectId;
+            if (analysis.MetricsById.TryGetValue(metricsKey, out var m) && m.AreaSqm < MinAreaSqm)
             {
                 analysis.Issues.Add(new ZoneIssue
                 {
@@ -47,32 +49,29 @@ public sealed class ZoneValidator
                 {
                     Type = ZoneIssueType.SelfIntersectingBoundary,
                     Severity = IssueSeverity.Error,
-                    Message = $"Boundary has {self.Count} self-intersection(s)",
+                    Message = "Zone boundary self-intersects",
                     RelatedZoneId = zone.RhinoObjectId,
                 });
             }
-        }
 
-        for (var i = 0; i < analysis.Zones.Count; i++)
-        {
             for (var j = i + 1; j < analysis.Zones.Count; j++)
             {
-                var a = analysis.Zones[i];
-                var b = analysis.Zones[j];
+                var other = analysis.Zones[j];
+                // Same parent zone split into parcels — overlap expected / not an issue
+                if (zone.RhinoObjectId == other.RhinoObjectId) continue;
+
                 try
                 {
-                    var rel = Curve.PlanarClosedCurveRelationship(a.Boundary, b.Boundary, Plane.WorldXY, _tolerance);
-                    if (rel is RegionContainment.MutualIntersection
-                        or RegionContainment.AInsideB
-                        or RegionContainment.BInsideA)
+                    var inter = Intersection.CurveCurve(zone.Boundary, other.Boundary, _tolerance, _tolerance);
+                    if (inter is { Count: > 0 })
                     {
                         analysis.Issues.Add(new ZoneIssue
                         {
                             Type = ZoneIssueType.ZoneOverlap,
-                            Severity = IssueSeverity.Error,
-                            Message = $"Zones overlap or nest ({rel})",
-                            RelatedZoneId = a.RhinoObjectId,
-                            RelatedZoneId2 = b.RhinoObjectId,
+                            Severity = IssueSeverity.Warning,
+                            Message = "Zone boundaries intersect",
+                            RelatedZoneId = zone.RhinoObjectId,
+                            RelatedZoneId2 = other.RhinoObjectId,
                         });
                     }
                 }

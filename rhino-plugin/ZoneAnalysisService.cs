@@ -71,9 +71,16 @@ public sealed class ZoneAnalysisService
                 if (!parcel.IsClosed) parcel.MakeClosed(tol * 10);
                 if (!parcel.IsClosed) continue;
 
+                // Unique metrics key per parcel so FAR / area stay correct after split
+                var metricsId = parcels.Count == 1
+                    ? baseRecord.RhinoObjectId
+                    : DeterministicPieceId(baseRecord.RhinoObjectId, pi);
+
                 var record = new ZoneRecord
                 {
                     RhinoObjectId = baseRecord.RhinoObjectId,
+                    MetricsId = metricsId,
+                    ParcelIndex = pi,
                     Boundary = parcel,
                     ZoneType = baseRecord.ZoneType,
                     Far = baseRecord.Far,
@@ -84,19 +91,10 @@ public sealed class ZoneAnalysisService
                     ZoneTypeWasMissing = baseRecord.ZoneTypeWasMissing,
                 };
 
-                // Unique key for multi-parcel: Guid composite via Metrics key
-                // Metrics dictionary needs unique key — use piece index hash
-                var metricsKey = parcels.Count == 1
-                    ? record.RhinoObjectId
-                    : DeterministicPieceId(record.RhinoObjectId, pi);
-
                 analysis.Zones.Add(record);
 
                 var metrics = ZoneMetricsCalculator.Compute(record, lengthScaleDocToM);
-                analysis.MetricsById[metricsKey] = metrics;
-                // Also store under original id for first piece so single-zone lookups still work
-                if (pi == 0)
-                    analysis.MetricsById[record.RhinoObjectId] = metrics;
+                analysis.MetricsById[metricsId] = metrics;
 
                 analysis.TotalAreaSqm += metrics.AreaSqm;
                 analysis.TotalPopulation += metrics.EstimatedPopulation;
@@ -120,6 +118,7 @@ public sealed class ZoneAnalysisService
         var bytes = parent.ToByteArray();
         bytes[0] ^= (byte)(index + 1);
         bytes[1] ^= (byte)((index + 1) * 17);
+        bytes[2] ^= (byte)((index + 1) * 31);
         return new Guid(bytes);
     }
 
@@ -177,6 +176,8 @@ public sealed class ZoneAnalysisService
         return new ZoneRecord
         {
             RhinoObjectId = obj.Id,
+            MetricsId = obj.Id,
+            ParcelIndex = 0,
             Boundary = boundary,
             ZoneType = zoneType,
             Far = Parse("far", defaults.Far),
