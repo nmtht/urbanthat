@@ -366,8 +366,10 @@ public sealed class ZoneTabContent : Panel
         {
             var lines = analysis.Zones.Select(z =>
             {
-                analysis.MetricsById.TryGetValue(z.RhinoObjectId, out var m);
-                return $"{z.ZoneType,-12} {z.MassingType,-10} {(m?.AreaSqm ?? 0),8:F0} m²  FAR {z.Far:F1}";
+                var mk = z.MetricsId != Guid.Empty ? z.MetricsId : z.RhinoObjectId;
+                analysis.MetricsById.TryGetValue(mk, out var m);
+                var parcel = z.ParcelIndex > 0 ? $" p{z.ParcelIndex}" : "";
+                return $"{z.ZoneType,-12} {z.MassingType,-10} {(m?.AreaSqm ?? 0),8:F0} m²  FAR {z.Far:F1}{parcel}";
             });
             _zonesText.Text = UiInvoke.FormatCappedLines(lines, 50);
         }
