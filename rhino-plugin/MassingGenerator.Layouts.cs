@@ -170,14 +170,12 @@ public sealed partial class MassingGenerator
         var result = new List<Curve>();
         var bbox = envelope.GetBoundingBox(true);
         var depth = DefaultBlockDepthM * _metersToDoc;
-        // Clear street between bars — at least 14 m
         var gap = Math.Max(DefaultMinGapM, 14.0) * (1.0 + 0.4 * zone.GreenRatio) * _metersToDoc;
         var maxLen = DefaultMaxBarLengthM * _metersToDoc;
         var sizeX = bbox.Max.X - bbox.Min.X;
         var sizeY = bbox.Max.Y - bbox.Min.Y;
         var alongX = sizeX >= sizeY;
 
-        // Start with margin so rows are not glued to one edge
         var margin = gap * 0.5;
 
         if (alongX)
@@ -243,6 +241,30 @@ public sealed partial class MassingGenerator
         return CurveToPads(result);
     }
 
+    private List<FootprintPad> EnforceMinGap(List<FootprintPad> pads, double greenRatio)
+    {
+        if (pads.Count <= 1) return pads;
+        var gap = Math.Max(DefaultMinGapM * (1.0 + 0.5 * Math.Clamp(greenRatio, 0, 1)), 10.0) * _metersToDoc;
+        var kept = new List<FootprintPad>();
+        foreach (var pad in pads.OrderByDescending(p => p.AreaSqm))
+        {
+            var bb = pad.Curve.GetBoundingBox(true);
+            var ok = true;
+            foreach (var k in kept)
+            {
+                var bbK = k.Curve.GetBoundingBox(true);
+                if (bb.Min.X < bbK.Max.X + gap && bb.Max.X > bbK.Min.X - gap &&
+                    bb.Min.Y < bbK.Max.Y + gap && bb.Max.Y > bbK.Min.Y - gap)
+                {
+                    ok = false;
+                    break;
+                }
+            }
+            if (ok) kept.Add(pad);
+        }
+        return kept.Count > 0 ? kept : pads.Take(1).ToList();
+    }
+
     private static Curve MakeRect(double cx, double cy, double z, double halfX, double halfY, double rotRad)
     {
         var corners = new[]
@@ -281,7 +303,6 @@ public sealed partial class MassingGenerator
 
     private List<FootprintPad> ClipPadsAwayFromRoads(RhinoDoc doc, List<FootprintPad> pads, double z0)
     {
-        // Roadway + sidewalk/parking + buffer — buildings must not touch curb
         var roads = RoadOutlineHelper.CollectPlanarRoadBreps(
             doc, z0, _docTolerance,
             includeSidewalkAndParking: true,
@@ -295,12 +316,11 @@ public sealed partial class MassingGenerator
             {
                 var planar = Brep.CreatePlanarBreps(pad.Curve, _docTolerance);
                 if (planar is null || planar.Length == 0)
-                    continue; // drop invalid
+                    continue;
 
                 foreach (var piece in planar)
                 {
                     var remain = RoadOutlineHelper.Subtract(piece, roads, _docTolerance);
-                    // NO fallback to original — empty means fully on road, drop it
                     foreach (var r in remain)
                     {
                         if (r is null || !r.IsValid) continue;
@@ -319,7 +339,6 @@ public sealed partial class MassingGenerator
             }
             catch
             {
-                // drop on failure rather than keep road overlap
             }
         }
 
