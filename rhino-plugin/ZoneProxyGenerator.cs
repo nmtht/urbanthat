@@ -42,7 +42,8 @@ public sealed class ZoneProxyGenerator
 
     public int CreateProxy(RhinoDoc doc, ZoneRecord zone)
     {
-        ZoneProxyCleanup.DeleteForZone(doc, zone.RhinoObjectId);
+        // RegenerateAll already wiped all proxies — do not DeleteForZone here:
+        // multi-parcel zones share RhinoObjectId and would erase sibling parcels.
 
         var boundary = zone.Boundary?.DuplicateCurve();
         if (boundary is null || !boundary.IsValid)
